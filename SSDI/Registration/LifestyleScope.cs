@@ -5,7 +5,7 @@ public enum LifestyleType
     /// <summary>
     ///     Every time a dependency is resolved, a new instance is created.
     /// </summary>
-    Scoped,
+    Transient,
 
     /// <summary>
     ///    A single instance is created for the lifetime of the application.
@@ -20,7 +20,7 @@ public class LifestyleScope
 
     public LifestyleScope(FluentExportRegistration registrationBlock) => _registrationBlock = registrationBlock;
 
-    public LifestyleType Lifestyle { get; set; } = LifestyleType.Scoped;
+    public LifestyleType Lifestyle { get; set; } = LifestyleType.Transient;
 
     /// <summary>
     ///     A single instance is created for the lifetime of the application. Can be called only once per registration.
@@ -42,13 +42,13 @@ public class LifestyleScope
     /// </summary>
     /// <exception cref="InvalidOperationException">Thrown if the caller attempts to set the lifestyle more than once. The lifestyle cannot be changed after registration as the object DI graph is alreay registed.</exception>
     /// <returns></returns>
-    public FluentExportRegistration Scoped()
+    public FluentExportRegistration Transient()
     {
         if (_set)
             throw new InvalidOperationException("Lifestyle already set.");
 
         _set = true;
-        Lifestyle = LifestyleType.Scoped;
+        Lifestyle = LifestyleType.Transient;
         return _registrationBlock;
     }
 
