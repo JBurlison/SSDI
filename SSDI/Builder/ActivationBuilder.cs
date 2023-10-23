@@ -83,10 +83,8 @@ public class ActivationBuilder
                 foreach (var a in alias)
                 {
                     if (LocateInternal(a, isEnumerable, parameters) is IList listOfObj)
-                    {
                         foreach (var o in listOfObj)
                             _ = list.Add(o);
-                    }
                 }
 
                 return list;
@@ -115,7 +113,6 @@ public class ActivationBuilder
         }
 
         if (_constructors.TryGetValue(type, out var constructors))
-        {
             foreach (var c in constructors)
             {
                 if (isEnumerable)
@@ -143,7 +140,6 @@ public class ActivationBuilder
                     }
                 }
             }
-        }
 
         return isEnumerable ? CreateListOfTType(type) : Activator.CreateInstance(type)!;
     }
@@ -161,7 +157,13 @@ public class ActivationBuilder
     {
         if (c.Parameters.Length == 0)
         {
-            var noParamsInstance = c.Constructor.Invoke(null);
+            var noParamsInstance = c.ConstructorDelegate.DynamicInvoke(null);
+
+            if (noParamsInstance is null)
+            {
+                val = default!;
+                return false;
+            }
 
             if (lifestyleType == LifestyleType.Singleton)
             {
@@ -192,6 +194,7 @@ public class ActivationBuilder
                 {
                     parameters[i] = parameterValue.Value;
                     foundParameter = true;
+                    _ = parameterValues.Remove(parameterValue);
                     break;
                 }
             }
@@ -225,7 +228,13 @@ public class ActivationBuilder
             return false;
         }
 
-        var instance = c.Constructor.Invoke(parameters);
+        var instance = c.ConstructorDelegate.DynamicInvoke(parameters);
+
+        if (instance is null)
+        {
+            val = default!;
+            return false;
+        }
 
         if (lifestyleType == LifestyleType.Singleton)
         {
