@@ -6,6 +6,14 @@ using SSDI.Registration;
 
 namespace SSDI.Builder;
 
+/// <summary>
+/// Provides the core activation and resolution logic for the dependency injection container.
+/// Handles constructor caching, lifetime management, and parameter resolution.
+/// </summary>
+/// <remarks>
+/// This class is the base class for <see cref="SSDI.DependencyInjectionContainer"/> and provides
+/// all the <c>Locate</c> methods for resolving dependencies.
+/// </remarks>
 public class ActivationBuilder
 {
     private readonly ConcurrentDictionary<Type, List<CachedConstructor[]>> _constructors = new();
@@ -58,10 +66,43 @@ public class ActivationBuilder
         }
     }
 
+    /// <summary>
+    /// Locates and returns an instance of the specified type.
+    /// </summary>
+    /// <typeparam name="T">The type to resolve.</typeparam>
+    /// <returns>An instance of <typeparamref name="T"/>.</returns>
+    /// <example>
+    /// <code>
+    /// var server = container.Locate&lt;TCPServer&gt;();
+    /// </code>
+    /// </example>
     public T Locate<T>() => (T)Locate(typeof(T));
 
+    /// <summary>
+    /// Locates and returns an instance of the specified type.
+    /// </summary>
+    /// <param name="type">The type to resolve.</param>
+    /// <returns>An instance of the specified type.</returns>
+    /// <example>
+    /// <code>
+    /// var server = container.Locate(typeof(TCPServer));
+    /// </code>
+    /// </example>
     public object Locate(Type type) => Locate(type, EmptyParameters);
 
+    /// <summary>
+    /// Locates and returns an instance with positional constructor parameters.
+    /// Parameters are matched by their position in the constructor (0-based).
+    /// </summary>
+    /// <typeparam name="T">The type to resolve.</typeparam>
+    /// <param name="parameters">The positional parameter values, starting at position 0.</param>
+    /// <returns>An instance of <typeparamref name="T"/>.</returns>
+    /// <example>
+    /// <code>
+    /// // For a constructor: TCPServer(string address, int port)
+    /// var server = container.LocateWithPositionalParams&lt;TCPServer&gt;("127.0.0.1", 8080);
+    /// </code>
+    /// </example>
     public T LocateWithPositionalParams<T>(params object[] parameters)
     {
         var diParams = new IDIParameter[parameters.Length];
@@ -72,6 +113,22 @@ public class ActivationBuilder
         return (T)Locate(typeof(T), diParams);
     }
 
+    /// <summary>
+    /// Locates and returns an instance with named constructor parameters.
+    /// Parameters are matched by their name in the constructor.
+    /// </summary>
+    /// <typeparam name="T">The type to resolve.</typeparam>
+    /// <param name="parameters">Tuples of parameter names and values.</param>
+    /// <returns>An instance of <typeparamref name="T"/>.</returns>
+    /// <example>
+    /// <code>
+    /// // For a constructor: TCPServer(string address, int port)
+    /// var server = container.LocateWithNamedParameters&lt;TCPServer&gt;(
+    ///     ("address", "127.0.0.1"), 
+    ///     ("port", 8080)
+    /// );
+    /// </code>
+    /// </example>
     public T LocateWithNamedParameters<T>(params (string name, object value)[] parameters)
     {
         var diParams = new IDIParameter[parameters.Length];
@@ -82,6 +139,19 @@ public class ActivationBuilder
         return (T)Locate(typeof(T), diParams);
     }
 
+    /// <summary>
+    /// Locates and returns an instance with typed constructor parameters.
+    /// Parameters are matched by their type.
+    /// </summary>
+    /// <typeparam name="T">The type to resolve.</typeparam>
+    /// <param name="parameters">The parameter values to match by type.</param>
+    /// <returns>An instance of <typeparamref name="T"/>.</returns>
+    /// <example>
+    /// <code>
+    /// // For a constructor: TCPServer(string address, int port)
+    /// var server = container.LocateWithTypedParams&lt;TCPServer&gt;("127.0.0.1", 8080);
+    /// </code>
+    /// </example>
     public T LocateWithTypedParams<T>(params object[] parameters)
     {
         var diParams = new IDIParameter[parameters.Length];
@@ -92,12 +162,69 @@ public class ActivationBuilder
         return (T)Locate(typeof(T), diParams);
     }
 
+    /// <summary>
+    /// Locates and returns an instance with custom DI parameters.
+    /// </summary>
+    /// <typeparam name="T">The type to resolve.</typeparam>
+    /// <param name="parameters">Custom <see cref="IDIParameter"/> instances for parameter matching.</param>
+    /// <returns>An instance of <typeparamref name="T"/>.</returns>
+    /// <example>
+    /// <code>
+    /// var server = container.Locate&lt;TCPServer&gt;(
+    ///     new NamedParameter("address", "127.0.0.1"),
+    ///     new PositionalParameter(1, 8080)
+    /// );
+    /// </code>
+    /// </example>
     public T Locate<T>(params IDIParameter[] parameters) => (T)Locate(typeof(T), parameters);
 
+    /// <summary>
+    /// Locates and returns an instance with a single positional parameter.
+    /// </summary>
+    /// <typeparam name="T">The type to resolve.</typeparam>
+    /// <param name="position">The zero-based position of the parameter in the constructor.</param>
+    /// <param name="value">The value for the parameter.</param>
+    /// <returns>An instance of <typeparamref name="T"/>.</returns>
+    /// <example>
+    /// <code>
+    /// // For a constructor: TCPServer(string address, int port)
+    /// var server = container.Locate&lt;TCPServer&gt;(0, "127.0.0.1");
+    /// </code>
+    /// </example>
     public T Locate<T>(int position, object value) => (T)Locate(typeof(T), new PositionalParameter(position, value));
 
+    /// <summary>
+    /// Locates and returns an instance with custom DI parameters.
+    /// </summary>
+    /// <typeparam name="T">The type to resolve.</typeparam>
+    /// <param name="parameters">Custom <see cref="IDIParameter"/> instances for parameter matching.</param>
+    /// <returns>An instance of <typeparamref name="T"/>.</returns>
+    /// <example>
+    /// <code>
+    /// var server = container.LocateWithParams&lt;TCPServer&gt;(
+    ///     new TypedParameter("127.0.0.1"),
+    ///     new TypedParameter(8080)
+    /// );
+    /// </code>
+    /// </example>
     public T LocateWithParams<T>(params IDIParameter[] parameters) => (T)Locate(typeof(T), parameters);
 
+    /// <summary>
+    /// Locates and returns an instance of the specified type with custom DI parameters.
+    /// Also supports resolving <see cref="IEnumerable{T}"/> to get all registered implementations of an interface.
+    /// </summary>
+    /// <param name="type">The type to resolve.</param>
+    /// <param name="parameters">Custom <see cref="IDIParameter"/> instances for parameter matching.</param>
+    /// <returns>An instance of the specified type, or an enumerable of instances if <paramref name="type"/> is <see cref="IEnumerable{T}"/>.</returns>
+    /// <example>
+    /// <code>
+    /// // Locate a single instance
+    /// var server = container.Locate(typeof(TCPServer), new NamedParameter("port", 8080));
+    /// 
+    /// // Locate all implementations of an interface
+    /// var routes = container.Locate(typeof(IEnumerable&lt;IPacketRouter&gt;));
+    /// </code>
+    /// </example>
     public object Locate(Type type, params IDIParameter[] parameters)
     {
         var isEnumerable = IsEnumerableType(type, out var elementType);
