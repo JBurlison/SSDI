@@ -26,8 +26,6 @@
     /// </example>
     public class PositionalParameter : IDIParameter
     {
-        private readonly int _position;
-
         /// <summary>
         /// Initializes a new instance of the <see cref="PositionalParameter"/> class.
         /// </summary>
@@ -35,9 +33,14 @@
         /// <param name="value">The value to inject.</param>
         public PositionalParameter(int position, object value)
         {
-            _position = position;
+            Position = position;
             Value = value;
         }
+
+        /// <summary>
+        /// Gets the zero-based position of the constructor parameter to match.
+        /// </summary>
+        public int Position { get; }
 
         /// <summary>
         /// Gets the value to be injected into the constructor parameter.
@@ -45,6 +48,6 @@
         public object Value { get; }
 
         /// <inheritdoc />
-        public bool GetParameterValue(string parameterName, int parameterPosition, Type parameterType) => parameterPosition == _position;
+        public bool GetParameterValue(string parameterName, int parameterPosition, Type parameterType) => parameterPosition == Position;
     }
 }

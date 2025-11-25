@@ -29,8 +29,9 @@ public class FluentExportRegistration
 
     /// <summary>
     /// Gets the list of constructor parameters configured for this registration.
+    /// Uses high-performance struct-based parameters internally.
     /// </summary>
-    public List<IDIParameter> Parameters { get; } = new();
+    internal List<DIParameter> ParametersInternal { get; } = new();
 
     internal FluentExportRegistration(InternalRegistration registrationBlock)
     {
@@ -107,7 +108,7 @@ public class FluentExportRegistration
     /// </example>
     public FluentExportRegistration WithCtorParam<TParam>(TParam value) where TParam : notnull
     {
-        Parameters.Add(new TypedParameter(value));
+        ParametersInternal.Add(DIParameter.Typed(value));
         return this;
     }
 
@@ -131,7 +132,7 @@ public class FluentExportRegistration
     /// </example>
     public FluentExportRegistration WithCtorParam(string name, object value)
     {
-        Parameters.Add(new NamedParameter(name, value));
+        ParametersInternal.Add(DIParameter.Named(name, value));
         return this;
     }
 
@@ -155,7 +156,7 @@ public class FluentExportRegistration
     /// </example>
     public FluentExportRegistration WithCtorParam(int position, object value)
     {
-        Parameters.Add(new PositionalParameter(position, value));
+        ParametersInternal.Add(DIParameter.Positional(position, value));
         return this;
     }
 
@@ -180,7 +181,7 @@ public class FluentExportRegistration
     {
         for (var i = 0; i < parameters.Length; i++)
         {
-            Parameters.Add(new PositionalParameter(i, parameters[i]));
+            ParametersInternal.Add(DIParameter.Positional(i, parameters[i]));
         }
 
         return this;
@@ -202,7 +203,7 @@ public class FluentExportRegistration
     /// </example>
     public FluentExportRegistration WithCtorParam(IDIParameter dIParameter)
     {
-        Parameters.Add(dIParameter);
+        ParametersInternal.Add(DIParameter.FromLegacy(dIParameter));
         return this;
     }
 }
