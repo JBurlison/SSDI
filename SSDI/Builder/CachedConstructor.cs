@@ -6,26 +6,30 @@ namespace SSDI.Builder;
 
 internal class CachedConstructor
 {
-    internal ConstructorInfo Constructor { get; }
     internal ParameterInfo[] Parameters { get; }
     internal List<IDIParameter> ParameterValues { get; }
-    internal Delegate ConstructorDelegate { get; }
+    internal Func<object?[], object> ConstructorFunc { get; }
 
     internal CachedConstructor(ConstructorInfo constructor, List<IDIParameter> parameterValues)
     {
-        Constructor = constructor;
         Parameters = constructor.GetParameters();
         ParameterValues = parameterValues;
 
-        var parametersExpressions = new List<ParameterExpression>();
+        // Compile to Func<object?[], object> for fast invocation (avoids DynamicInvoke)
+        var argsParam = Expression.Parameter(typeof(object?[]), "args");
 
-        foreach (var parameter in Parameters)
+        var convertedArgs = new Expression[Parameters.Length];
+        for (var i = 0; i < Parameters.Length; i++)
         {
-            var parameterExpression = Expression.Parameter(parameter.ParameterType, parameter.Name);
-            parametersExpressions.Add(parameterExpression);
+            var arrayAccess = Expression.ArrayIndex(argsParam, Expression.Constant(i));
+            convertedArgs[i] = Expression.Convert(arrayAccess, Parameters[i].ParameterType);
         }
 
-        var expression = Expression.New(constructor, parametersExpressions);
-        ConstructorDelegate = Expression.Lambda(expression, parametersExpressions).Compile();
+        var newExpr = Expression.New(constructor, convertedArgs);
+        var lambda = Expression.Lambda<Func<object?[], object>>(
+            Expression.Convert(newExpr, typeof(object)),
+            argsParam);
+
+        ConstructorFunc = lambda.Compile();
     }
 }

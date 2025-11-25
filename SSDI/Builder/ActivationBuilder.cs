@@ -1,4 +1,6 @@
 ﻿using System.Collections;
+using System.Collections.Concurrent;
+using System.Linq.Expressions;
 using SSDI.Parameters;
 using SSDI.Registration;
 
@@ -6,10 +8,16 @@ namespace SSDI.Builder;
 
 public class ActivationBuilder
 {
-    private readonly Dictionary<Type, List<CachedConstructor[]>> _constructors = new();
-    private readonly Dictionary<Type, LifestyleType> _lifetimes = new();
-    private readonly Dictionary<Type, HashSet<object>> _singletonInstances = new();
-    private readonly Dictionary<Type, HashSet<Type>> _alias = new();
+    private readonly ConcurrentDictionary<Type, List<CachedConstructor[]>> _constructors = new();
+    private readonly ConcurrentDictionary<Type, LifestyleType> _lifetimes = new();
+    private readonly ConcurrentDictionary<Type, object> _singletonInstances = new();
+    private readonly ConcurrentDictionary<Type, HashSet<Type>> _alias = new();
+    private readonly ConcurrentDictionary<Type, Func<IList>> _listFactories = new();
+    private readonly ConcurrentDictionary<Type, bool> _isEnumerableCache = new();
+
+    // Reusable empty array to avoid allocations
+    private static readonly IDIParameter[] EmptyParameters = Array.Empty<IDIParameter>();
+    private static readonly object?[] EmptyObjectArray = Array.Empty<object?>();
 
     internal void Add(ExportRegistration reg)
     {
@@ -19,49 +27,70 @@ public class ActivationBuilder
 
             foreach (var aliasType in exportRegistration.FluentExportRegistration.Alias)
             {
-                if (!_alias.TryGetValue(aliasType, out var aliasSet))
+                var aliasSet = _alias.GetOrAdd(aliasType, _ => new HashSet<Type>());
+                lock (aliasSet)
                 {
-                    aliasSet = new HashSet<Type>();
-                    _alias[aliasType] = aliasSet;
+                    aliasSet.Add(exportRegistration.ExportedType);
                 }
-
-                _ = aliasSet.Add(exportRegistration.ExportedType);
                 _lifetimes[aliasType] = exportRegistration.FluentExportRegistration.Lifestyle.Lifestyle;
             }
 
             if (exportRegistration.FluentExportRegistration.Lifestyle.Lifestyle == LifestyleType.Singleton &&
                 exportRegistration.Instance is not null)
             {
-                if (!_singletonInstances.TryGetValue(exportRegistration.ExportedType, out var singletons))
-                {
-                    singletons = new HashSet<object>();
-                    _singletonInstances[exportRegistration.ExportedType] = singletons;
-                }
-
-                _ = singletons.Add(exportRegistration.Instance);
+                _singletonInstances[exportRegistration.ExportedType] = exportRegistration.Instance;
                 continue;
             }
 
             // Order constructors by parameter count, descending so we get the lowest parameter count constructor first
-            if (!_constructors.TryGetValue(exportRegistration.ExportedType, out var constructors))
+            var constructors = _constructors.GetOrAdd(exportRegistration.ExportedType, _ => new List<CachedConstructor[]>());
+            var ctorInfos = exportRegistration.ExportedType.GetConstructors();
+            var cachedCtors = new CachedConstructor[ctorInfos.Length];
+            for (var i = 0; i < ctorInfos.Length; i++)
             {
-                constructors = new List<CachedConstructor[]>();
-                _constructors[exportRegistration.ExportedType] = constructors;
+                cachedCtors[i] = new CachedConstructor(ctorInfos[i], exportRegistration.FluentExportRegistration.Parameters);
             }
 
-            constructors.Add(exportRegistration.ExportedType.GetConstructors().Select(c => new CachedConstructor(c, exportRegistration.FluentExportRegistration.Parameters)).ToArray());
+            lock (constructors)
+            {
+                constructors.Add(cachedCtors);
+            }
         }
     }
 
     public T Locate<T>() => (T)Locate(typeof(T));
 
-    public object Locate(Type type) => Locate(type, Array.Empty<IDIParameter>());
+    public object Locate(Type type) => Locate(type, EmptyParameters);
 
-    public T LocateWithPositionalParams<T>(params object[] parameters) => (T)Locate(typeof(T), parameters.Select((p, i) => new PositionalParameter(i, p)).ToArray());
+    public T LocateWithPositionalParams<T>(params object[] parameters)
+    {
+        var diParams = new IDIParameter[parameters.Length];
+        for (var i = 0; i < parameters.Length; i++)
+        {
+            diParams[i] = new PositionalParameter(i, parameters[i]);
+        }
+        return (T)Locate(typeof(T), diParams);
+    }
 
-    public T LocateWithNamedParameters<T>(params (string name, object value)[] parameters) => (T)Locate(typeof(T), parameters.Select(p => new NamedParameter(p.name, p.value)).ToArray());
+    public T LocateWithNamedParameters<T>(params (string name, object value)[] parameters)
+    {
+        var diParams = new IDIParameter[parameters.Length];
+        for (var i = 0; i < parameters.Length; i++)
+        {
+            diParams[i] = new NamedParameter(parameters[i].name, parameters[i].value);
+        }
+        return (T)Locate(typeof(T), diParams);
+    }
 
-    public T LocateWithTypedParams<T>(params object[] parameters) => (T)Locate(typeof(T), parameters.Select(p => new TypedParameter(p)).ToArray());
+    public T LocateWithTypedParams<T>(params object[] parameters)
+    {
+        var diParams = new IDIParameter[parameters.Length];
+        for (var i = 0; i < parameters.Length; i++)
+        {
+            diParams[i] = new TypedParameter(parameters[i]);
+        }
+        return (T)Locate(typeof(T), diParams);
+    }
 
     public T Locate<T>(params IDIParameter[] parameters) => (T)Locate(typeof(T), parameters);
 
@@ -71,36 +100,61 @@ public class ActivationBuilder
 
     public object Locate(Type type, params IDIParameter[] parameters)
     {
-        var isEnumerable = type.IsGenericType && type.GetGenericTypeDefinition() == typeof(IEnumerable<>);
-        type = isEnumerable ? type.GetGenericArguments()[0] : type;
+        var isEnumerable = IsEnumerableType(type, out var elementType);
+        var resolveType = isEnumerable ? elementType! : type;
 
-        if (_alias.TryGetValue(type, out var alias))
+        if (_alias.TryGetValue(resolveType, out var alias))
         {
             if (isEnumerable)
             {
-                var list = CreateListOfTType(type);
+                var list = CreateListOfTType(resolveType);
 
-                foreach (var a in alias)
+                HashSet<Type> aliasCopy;
+                lock (alias)
+                {
+                    aliasCopy = new HashSet<Type>(alias);
+                }
+
+                foreach (var a in aliasCopy)
                 {
                     if (LocateInternal(a, isEnumerable, parameters) is IList listOfObj)
                         foreach (var o in listOfObj)
-                            _ = list.Add(o);
+                            list.Add(o);
                 }
 
                 return list;
             }
             else
             {
-                foreach (var a in alias)
-                    return LocateInternal(a, isEnumerable, parameters);
+                lock (alias)
+                {
+                    foreach (var a in alias)
+                        return LocateInternal(a, isEnumerable, parameters);
+                }
 
                 throw new Exception($"Could not find a concrete type for interface {type.FullName}");
             }
         }
         else
         {
-            return LocateInternal(type, isEnumerable, parameters);
+            return LocateInternal(resolveType, isEnumerable, parameters);
         }
+    }
+
+    private bool IsEnumerableType(Type type, out Type? elementType)
+    {
+        if (!type.IsGenericType)
+        {
+            elementType = null;
+            return false;
+        }
+
+        // Cache the result for this type
+        var isEnumerable = _isEnumerableCache.GetOrAdd(type, t =>
+            t.IsGenericType && t.GetGenericTypeDefinition() == typeof(IEnumerable<>));
+
+        elementType = isEnumerable ? type.GetGenericArguments()[0] : null;
+        return isEnumerable;
     }
 
     private object LocateInternal(Type type, bool isEnumerable, params IDIParameter[] parameters)
@@ -109,11 +163,24 @@ public class ActivationBuilder
             lifestyleType == LifestyleType.Singleton &&
             _singletonInstances.TryGetValue(type, out var instance))
         {
-            return isEnumerable ? instance : instance.First();
+            if (isEnumerable)
+            {
+                var singletonList = CreateListOfTType(type);
+                singletonList.Add(instance);
+                return singletonList;
+            }
+            return instance;
         }
 
         if (_constructors.TryGetValue(type, out var constructors))
-            foreach (var c in constructors)
+        {
+            List<CachedConstructor[]> constructorsCopy;
+            lock (constructors)
+            {
+                constructorsCopy = new List<CachedConstructor[]>(constructors);
+            }
+
+            foreach (var c in constructorsCopy)
             {
                 if (isEnumerable)
                 {
@@ -121,10 +188,10 @@ public class ActivationBuilder
 
                     foreach (var cc in c)
                     {
-                        var param = cc.ParameterValues.Concat(parameters).ToList(); // if parameters where provided use constructor that has them.
+                        var paramCount = cc.ParameterValues.Count + parameters.Length;
 
-                        if (cc.Parameters.Length >= param.Count && Locate(cc, type, lifestyleType, param, out var val))
-                            _ = list.Add(val);
+                        if (cc.Parameters.Length >= paramCount && Locate(cc, type, lifestyleType, parameters, out var val))
+                            list.Add(val);
                     }
 
                     return list;
@@ -133,31 +200,36 @@ public class ActivationBuilder
                 {
                     foreach (var cc in c)
                     {
-                        var param = cc.ParameterValues.Concat(parameters).ToList(); // if parameters where provided use constructor that has them.
+                        var paramCount = cc.ParameterValues.Count + parameters.Length;
 
-                        if (cc.Parameters.Length >= param.Count && Locate(cc, type, lifestyleType, param, out var val))
+                        if (cc.Parameters.Length >= paramCount && Locate(cc, type, lifestyleType, parameters, out var val))
                             return val;
                     }
                 }
             }
+        }
 
         return isEnumerable ? CreateListOfTType(type) : Activator.CreateInstance(type)!;
     }
 
-    private static IList CreateListOfTType(Type type)
+    private IList CreateListOfTType(Type type)
     {
-        var listType = typeof(List<>).MakeGenericType(type);
-        var listObj = Activator.CreateInstance(listType) ?? throw new Exception($"Could not create list of type {listType.FullName}");
+        var factory = _listFactories.GetOrAdd(type, t =>
+        {
+            var listType = typeof(List<>).MakeGenericType(t);
+            var ctor = listType.GetConstructor(Type.EmptyTypes)!;
+            var lambda = Expression.Lambda<Func<IList>>(Expression.New(ctor));
+            return lambda.Compile();
+        });
 
-        var list = (IList)listObj;
-        return list;
+        return factory();
     }
 
-    private bool Locate(CachedConstructor c, Type type, LifestyleType lifestyleType, List<IDIParameter> parameterValues, out object val)
+    private bool Locate(CachedConstructor c, Type type, LifestyleType lifestyleType, IDIParameter[] runtimeParameters, out object val)
     {
         if (c.Parameters.Length == 0)
         {
-            var noParamsInstance = c.ConstructorDelegate.DynamicInvoke(null);
+            var noParamsInstance = c.ConstructorFunc(EmptyObjectArray);
 
             if (noParamsInstance is null)
             {
@@ -167,13 +239,7 @@ public class ActivationBuilder
 
             if (lifestyleType == LifestyleType.Singleton)
             {
-                if (!_singletonInstances.TryGetValue(type, out var singletons))
-                {
-                    singletons = new HashSet<object>();
-                    _singletonInstances[type] = singletons;
-                }
-
-                _ = singletons.Add(noParamsInstance);
+                _singletonInstances.TryAdd(type, noParamsInstance);
             }
 
             val = noParamsInstance;
@@ -181,45 +247,73 @@ public class ActivationBuilder
         }
 
         var parameters = new object?[c.Parameters.Length];
-        var i = 0;
         var found = true;
 
-        foreach (var p in c.Parameters)
+        // Track which parameters have been consumed using a bitfield for small counts, or HashSet for larger
+        // For most DI scenarios, parameter counts are small, so we use a simple bool array
+        var registeredParams = c.ParameterValues;
+        var consumedRegistered = registeredParams.Count > 0 ? new bool[registeredParams.Count] : Array.Empty<bool>();
+        var consumedRuntime = runtimeParameters.Length > 0 ? new bool[runtimeParameters.Length] : Array.Empty<bool>();
+
+        for (var i = 0; i < c.Parameters.Length; i++)
         {
+            var p = c.Parameters[i];
             var foundParameter = false;
 
-            foreach (var parameterValue in parameterValues)
+            // Check registered parameters first
+            for (var j = 0; j < registeredParams.Count; j++)
             {
+                if (consumedRegistered[j])
+                    continue;
+
+                var parameterValue = registeredParams[j];
                 if (parameterValue.GetParameterValue(p.Name ?? "", p.Position, p.ParameterType))
                 {
                     parameters[i] = parameterValue.Value;
                     foundParameter = true;
-                    _ = parameterValues.Remove(parameterValue);
+                    consumedRegistered[j] = true;
                     break;
                 }
             }
 
-            if (foundParameter)
+            if (!foundParameter)
             {
-                i++;
+                // Check runtime parameters
+                for (var j = 0; j < runtimeParameters.Length; j++)
+                {
+                    if (consumedRuntime[j])
+                        continue;
+
+                    var parameterValue = runtimeParameters[j];
+                    if (parameterValue.GetParameterValue(p.Name ?? "", p.Position, p.ParameterType))
+                    {
+                        parameters[i] = parameterValue.Value;
+                        foundParameter = true;
+                        consumedRuntime[j] = true;
+                        break;
+                    }
+                }
+            }
+
+            if (foundParameter)
+                continue;
+
+            // Try to resolve from container
+            if (_constructors.ContainsKey(p.ParameterType) || _alias.ContainsKey(p.ParameterType))
+            {
+                parameters[i] = Locate(p.ParameterType);
                 continue;
             }
 
-            if (!_constructors.ContainsKey(type))
+            // Check for optional parameter
+            if (p.IsOptional)
             {
-                if (p.IsOptional)
-                {
-                    parameters[i] = p.DefaultValue;
-                    i++;
-                    continue;
-                }
-
-                found = false;
-                break;
+                parameters[i] = p.DefaultValue;
+                continue;
             }
 
-            parameters[i] = Locate(p.ParameterType);
-            i++;
+            found = false;
+            break;
         }
 
         if (!found)
@@ -228,7 +322,7 @@ public class ActivationBuilder
             return false;
         }
 
-        var instance = c.ConstructorDelegate.DynamicInvoke(parameters);
+        var instance = c.ConstructorFunc(parameters);
 
         if (instance is null)
         {
@@ -238,13 +332,7 @@ public class ActivationBuilder
 
         if (lifestyleType == LifestyleType.Singleton)
         {
-            if (!_singletonInstances.TryGetValue(type, out var singletons))
-            {
-                singletons = new HashSet<object>();
-                _singletonInstances[type] = singletons;
-            }
-
-            _ = singletons.Add(instance);
+            _singletonInstances.TryAdd(type, instance);
         }
 
         val = instance;
