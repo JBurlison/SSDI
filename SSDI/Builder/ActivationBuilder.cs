@@ -102,6 +102,166 @@ public class ActivationBuilder
     }
 
     /// <summary>
+    /// Unregisters a type from the container.
+    /// </summary>
+    /// <typeparam name="T">The type to unregister.</typeparam>
+    /// <param name="removeFromAliases">If true, also removes this type from any alias (interface) registrations it belongs to.</param>
+    /// <returns>True if the type was found and removed; otherwise, false.</returns>
+    /// <remarks>
+    /// If the type was registered as a singleton and has already been instantiated, the cached instance will be removed.
+    /// If the instance implements <see cref="IDisposable"/>, it will be disposed.
+    /// </remarks>
+    /// <example>
+    /// <code>
+    /// container.Configure(c => c.Export&lt;OldService&gt;().As&lt;IService&gt;());
+    /// 
+    /// // Later, unregister OldService and remove it from IService alias
+    /// container.Unregister&lt;OldService&gt;(removeFromAliases: true);
+    /// 
+    /// // Register a new implementation
+    /// container.Configure(c => c.Export&lt;NewService&gt;().As&lt;IService&gt;());
+    /// </code>
+    /// </example>
+    public bool Unregister<T>(bool removeFromAliases = true) => Unregister(typeof(T), removeFromAliases);
+
+    /// <summary>
+    /// Unregisters a type from the container.
+    /// </summary>
+    /// <param name="type">The type to unregister.</param>
+    /// <param name="removeFromAliases">If true, also removes this type from any alias (interface) registrations it belongs to.</param>
+    /// <returns>True if the type was found and removed; otherwise, false.</returns>
+    /// <remarks>
+    /// If the type was registered as a singleton and has already been instantiated, the cached instance will be removed.
+    /// If the instance implements <see cref="IDisposable"/>, it will be disposed.
+    /// </remarks>
+    public bool Unregister(Type type, bool removeFromAliases = true)
+    {
+        var removed = false;
+
+        // Remove constructors
+        if (_constructors.TryRemove(type, out _))
+        {
+            removed = true;
+        }
+
+        // Remove lifetime registration
+        _lifetimes.TryRemove(type, out _);
+
+        // Remove singleton instance and dispose if applicable
+        if (_singletonInstances.TryRemove(type, out var instance))
+        {
+            if (instance is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+#if NET8_0_OR_GREATER
+            else if (instance is IAsyncDisposable asyncDisposable)
+            {
+                asyncDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+#endif
+            removed = true;
+        }
+
+        // Remove from all alias sets
+        if (removeFromAliases)
+        {
+            foreach (var kvp in _alias)
+            {
+                if (kvp.Value.Contains(type))
+                {
+                    _alias.AddOrUpdate(
+                        kvp.Key,
+                        _ => ImmutableHashSet<Type>.Empty,
+                        (_, existing) => existing.Remove(type));
+                }
+            }
+        }
+
+        return removed;
+    }
+
+    /// <summary>
+    /// Unregisters all implementations registered under an alias (interface) type.
+    /// </summary>
+    /// <typeparam name="TAlias">The alias type (typically an interface) to unregister all implementations for.</typeparam>
+    /// <returns>The number of implementations that were unregistered.</returns>
+    /// <remarks>
+    /// This method removes all concrete types that were registered with <c>.As&lt;TAlias&gt;()</c>.
+    /// Each implementation's singleton instance (if any) will be disposed if it implements <see cref="IDisposable"/>.
+    /// </remarks>
+    /// <example>
+    /// <code>
+    /// container.Configure(c =>
+    /// {
+    ///     c.Export&lt;AuthHandler&gt;().As&lt;IPacketHandler&gt;();
+    ///     c.Export&lt;GameHandler&gt;().As&lt;IPacketHandler&gt;();
+    ///     c.Export&lt;ChatHandler&gt;().As&lt;IPacketHandler&gt;();
+    /// });
+    /// 
+    /// // Unregister all packet handlers
+    /// int count = container.UnregisterAll&lt;IPacketHandler&gt;(); // Returns 3
+    /// </code>
+    /// </example>
+    public int UnregisterAll<TAlias>() => UnregisterAll(typeof(TAlias));
+
+    /// <summary>
+    /// Unregisters all implementations registered under an alias (interface) type.
+    /// </summary>
+    /// <param name="aliasType">The alias type (typically an interface) to unregister all implementations for.</param>
+    /// <returns>The number of implementations that were unregistered.</returns>
+    /// <remarks>
+    /// This method removes all concrete types that were registered with <c>.As(aliasType)</c>.
+    /// Each implementation's singleton instance (if any) will be disposed if it implements <see cref="IDisposable"/>.
+    /// </remarks>
+    public int UnregisterAll(Type aliasType)
+    {
+        if (!_alias.TryRemove(aliasType, out var implementations))
+        {
+            return 0;
+        }
+
+        var count = 0;
+        foreach (var implType in implementations)
+        {
+            if (Unregister(implType, removeFromAliases: false))
+            {
+                count++;
+            }
+        }
+
+        // Also remove the alias lifetime
+        _lifetimes.TryRemove(aliasType, out _);
+
+        return count;
+    }
+
+    /// <summary>
+    /// Checks if a type is registered in the container.
+    /// </summary>
+    /// <typeparam name="T">The type to check.</typeparam>
+    /// <returns>True if the type is registered; otherwise, false.</returns>
+    /// <example>
+    /// <code>
+    /// if (container.IsRegistered&lt;ILogger&gt;())
+    /// {
+    ///     var logger = container.Locate&lt;ILogger&gt;();
+    /// }
+    /// </code>
+    /// </example>
+    public bool IsRegistered<T>() => IsRegistered(typeof(T));
+
+    /// <summary>
+    /// Checks if a type is registered in the container.
+    /// </summary>
+    /// <param name="type">The type to check.</param>
+    /// <returns>True if the type is registered; otherwise, false.</returns>
+    public bool IsRegistered(Type type) => 
+        _constructors.ContainsKey(type) || 
+        _alias.ContainsKey(type) || 
+        _singletonInstances.ContainsKey(type);
+
+    /// <summary>
     /// Locates and returns an instance of the specified type.
     /// </summary>
     /// <typeparam name="T">The type to resolve.</typeparam>

@@ -9,6 +9,7 @@ A lightweight dependency injection framework for .NET designed for console appli
 
 - ✅ **No container build step** — Register types at any time
 - ✅ **Runtime extensibility** — Perfect for plugin architectures
+- ✅ **Unregister support** — Remove registrations and hot-swap implementations
 - ✅ **Lightweight** — Minimal overhead, ideal for games
 - ✅ **Simple API** — Easy to learn and use
 - ✅ **Multiple parameter binding options** — By type, name, or position
@@ -171,6 +172,290 @@ var server = container.LocateWithNamedParameters<TCPServer>(
     ("port", 8080)
 );
 ```
+
+## Unregistering Services
+
+SSDI supports removing registrations at runtime, which is useful for plugin unloading, hot-swapping implementations, or cleaning up resources.
+
+### Unregister a Specific Type
+```cs
+// Unregister a type and remove it from all aliases (interfaces)
+container.Unregister<OldService>();
+
+// Unregister a type but keep it in alias sets
+container.Unregister<OldService>(removeFromAliases: false);
+```
+
+### Unregister All Implementations of an Interface
+```cs
+// Remove all implementations registered under IPacketHandler
+int count = container.UnregisterAll<IPacketHandler>();
+Console.WriteLine($"Removed {count} packet handlers");
+```
+
+### Check if a Type is Registered
+```cs
+if (container.IsRegistered<ILogger>())
+{
+    var logger = container.Locate<ILogger>();
+}
+```
+
+### Example: Hot-Swapping a Service
+```cs
+// Initial registration
+container.Configure(c =>
+{
+    c.Export<FileLogger>().As<ILogger>().Lifestyle.Singleton();
+});
+
+var logger = container.Locate<ILogger>();
+logger.Log("Using file logger");
+
+// Hot-swap to a different implementation
+container.Unregister<FileLogger>(removeFromAliases: true);
+container.Configure(c =>
+{
+    c.Export<CloudLogger>().As<ILogger>().Lifestyle.Singleton();
+});
+
+// New logger is now in use
+logger = container.Locate<ILogger>();
+logger.Log("Now using cloud logger");
+```
+
+### Example: Plugin Unloading
+```cs
+public class PluginManager
+{
+    private readonly DependencyInjectionContainer _container;
+    private readonly Dictionary<string, List<Type>> _pluginTypes = new();
+
+    public void LoadPlugin(string pluginId, Assembly assembly)
+    {
+        var types = new List<Type>();
+        
+        _container.Configure(c =>
+        {
+            foreach (var type in assembly.GetTypes()
+                .Where(t => typeof(IPlugin).IsAssignableFrom(t) && !t.IsAbstract))
+            {
+                c.Export(type).As<IPlugin>();
+                types.Add(type);
+            }
+        });
+        
+        _pluginTypes[pluginId] = types;
+    }
+
+    public void UnloadPlugin(string pluginId)
+    {
+        if (_pluginTypes.TryGetValue(pluginId, out var types))
+        {
+            foreach (var type in types)
+            {
+                // Unregister each type (disposes singletons automatically)
+                _container.Unregister(type);
+            }
+            _pluginTypes.Remove(pluginId);
+        }
+    }
+}
+```
+
+### Example: Resource Cleanup on Scene Change
+```cs
+public class SceneManager
+{
+    private readonly DependencyInjectionContainer _container;
+
+    public void UnloadCurrentScene()
+    {
+        // Unregister all scene-specific services
+        // Singletons implementing IDisposable are automatically disposed
+        _container.UnregisterAll<ISceneService>();
+        _container.UnregisterAll<IEnemy>();
+        _container.Unregister<CurrentSceneController>();
+    }
+
+    public void LoadBattleScene()
+    {
+        UnloadCurrentScene();
+        
+        _container.Configure(c =>
+        {
+            c.Export<BattleSceneController>().As<ISceneService>().Lifestyle.Singleton();
+            c.Export<BattleUI>().As<ISceneService>().Lifestyle.Singleton();
+            c.Export<Goblin>().As<IEnemy>();
+            c.Export<Orc>().As<IEnemy>();
+            c.Export<Dragon>().As<IEnemy>();
+        });
+    }
+
+    public void LoadTownScene()
+    {
+        UnloadCurrentScene();
+        
+        _container.Configure(c =>
+        {
+            c.Export<TownSceneController>().As<ISceneService>().Lifestyle.Singleton();
+            c.Export<TownUI>().As<ISceneService>().Lifestyle.Singleton();
+            c.Export<ShopKeeper>().As<INPC>();
+            c.Export<QuestGiver>().As<INPC>();
+        });
+    }
+}
+```
+
+### Example: A/B Testing with Runtime Switching
+```cs
+public class ABTestManager
+{
+    private readonly DependencyInjectionContainer _container;
+
+    public void SwitchToVariantA()
+    {
+        // Remove current payment processor
+        _container.UnregisterAll<IPaymentProcessor>();
+        
+        _container.Configure(c =>
+        {
+            c.Export<StripeProcessor>().As<IPaymentProcessor>().Lifestyle.Singleton();
+        });
+    }
+
+    public void SwitchToVariantB()
+    {
+        // Remove current payment processor
+        _container.UnregisterAll<IPaymentProcessor>();
+        
+        _container.Configure(c =>
+        {
+            c.Export<PayPalProcessor>().As<IPaymentProcessor>().Lifestyle.Singleton();
+        });
+    }
+}
+```
+
+### Example: Graceful Service Replacement
+```cs
+public class ServiceManager
+{
+    private readonly DependencyInjectionContainer _container;
+
+    public async Task UpgradeDatabaseConnectionAsync(string newConnectionString)
+    {
+        // Check if we have an existing connection
+        if (_container.IsRegistered<IDatabaseConnection>())
+        {
+            // Unregister will dispose the old connection gracefully
+            _container.UnregisterAll<IDatabaseConnection>();
+        }
+
+        // Register the new connection
+        _container.Configure(c =>
+        {
+            c.Export<DatabaseConnection>()
+                .WithCtorParam("connectionString", newConnectionString)
+                .As<IDatabaseConnection>()
+                .Lifestyle.Singleton();
+        });
+
+        // Verify the new connection works
+        var db = _container.Locate<IDatabaseConnection>();
+        await db.TestConnectionAsync();
+    }
+}
+```
+
+### Example: Debug Mode Toggle
+```cs
+public class DebugManager
+{
+    private readonly DependencyInjectionContainer _container;
+    private bool _debugMode = false;
+
+    public void ToggleDebugMode()
+    {
+        _debugMode = !_debugMode;
+        
+        // Remove current logger
+        _container.UnregisterAll<ILogger>();
+        
+        if (_debugMode)
+        {
+            _container.Configure(c =>
+            {
+                // Verbose console logger for debugging
+                c.Export<ConsoleLogger>()
+                    .WithCtorParam("minLevel", LogLevel.Trace)
+                    .As<ILogger>()
+                    .Lifestyle.Singleton();
+                    
+                // Add debug-only services
+                c.Export<PerformanceProfiler>().Lifestyle.Singleton();
+                c.Export<MemoryTracker>().Lifestyle.Singleton();
+            });
+        }
+        else
+        {
+            _container.Configure(c =>
+            {
+                // Minimal file logger for production
+                c.Export<FileLogger>()
+                    .WithCtorParam("minLevel", LogLevel.Warning)
+                    .As<ILogger>()
+                    .Lifestyle.Singleton();
+            });
+            
+            // Remove debug services
+            _container.Unregister<PerformanceProfiler>();
+            _container.Unregister<MemoryTracker>();
+        }
+    }
+}
+```
+
+### Example: Connection Pool Management
+```cs
+public class ConnectionPoolManager
+{
+    private readonly DependencyInjectionContainer _container;
+    private readonly List<Type> _connectionTypes = new();
+
+    public void AddConnection<TConnection>() where TConnection : IConnection
+    {
+        _container.Configure(c =>
+        {
+            c.Export<TConnection>().As<IConnection>();
+        });
+        _connectionTypes.Add(typeof(TConnection));
+    }
+
+    public void RemoveConnection<TConnection>() where TConnection : IConnection
+    {
+        if (_container.Unregister<TConnection>())
+        {
+            _connectionTypes.Remove(typeof(TConnection));
+            Console.WriteLine($"Removed connection: {typeof(TConnection).Name}");
+        }
+    }
+
+    public void ClearAllConnections()
+    {
+        int removed = _container.UnregisterAll<IConnection>();
+        _connectionTypes.Clear();
+        Console.WriteLine($"Cleared {removed} connections");
+    }
+
+    public IEnumerable<IConnection> GetActiveConnections()
+    {
+        return _container.Locate<IEnumerable<IConnection>>();
+    }
+}
+```
+
+> **Note:** When unregistering a singleton that has already been instantiated, SSDI will automatically call `Dispose()` if the instance implements `IDisposable` (or `IAsyncDisposable` on .NET 8+).
 
 ---
 
