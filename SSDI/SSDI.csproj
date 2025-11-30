@@ -7,7 +7,7 @@
     
     <!-- NuGet Package Metadata -->
     <PackageId>SSDI</PackageId>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
     <Authors>JBurlison</Authors>
     <Company>JBurlison</Company>
     <Description>Super Simple Dependency Injection - A lightweight DI framework for Console apps and games. No container build step required, allowing runtime extensibility with dynamically loaded DLLs.</Description>
@@ -23,7 +23,7 @@
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
-    
+    <DebugType>embedded</DebugType>
     <!-- Generate XML documentation -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
@@ -32,9 +32,13 @@
     <None Include="..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
-  <!-- Source Link for GitHub -->
   <ItemGroup>
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All"/>
   </ItemGroup>
+
+  <!-- Deterministic builds for CI - required for SourceLink validation -->
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true' or '$(CI)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
 
 </Project>
