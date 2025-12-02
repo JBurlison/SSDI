@@ -471,6 +471,14 @@ public class ActivationBuilder
     /// <returns>An instance of the specified type.</returns>
     public object Locate(Type type, params DIParameter[] parameters)
     {
+        return LocateWithScope(type, null, parameters);
+    }
+
+    /// <summary>
+    /// Internal method to locate a type with scope support.
+    /// </summary>
+    internal object LocateWithScope(Type type, Scope? scope, DIParameter[] parameters)
+    {
         var elementType = GetEnumerableElementType(type);
         var isEnumerable = elementType is not null;
         var resolveType = isEnumerable ? elementType! : type;
@@ -480,11 +488,11 @@ public class ActivationBuilder
             if (isEnumerable)
             {
                 var list = CreateListOfTType(resolveType);
-                
+
                 // ImmutableHashSet - no lock needed for iteration
                 foreach (var aliasedType in aliasSet)
                 {
-                    if (LocateInternal(aliasedType, true, parameters) is IList listOfObj)
+                    if (LocateInternal(aliasedType, true, parameters, scope) is IList listOfObj)
                     {
                         foreach (var o in listOfObj)
                             list.Add(o);
@@ -498,14 +506,14 @@ public class ActivationBuilder
                 // Return first matching alias
                 foreach (var aliasedType in aliasSet)
                 {
-                    return LocateInternal(aliasedType, false, parameters);
+                    return LocateInternal(aliasedType, false, parameters, scope);
                 }
 
                 throw new InvalidOperationException($"Could not find a concrete type for interface {type.FullName}");
             }
         }
 
-        return LocateInternal(resolveType, isEnumerable, parameters);
+        return LocateInternal(resolveType, isEnumerable, parameters, scope);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -521,7 +529,7 @@ public class ActivationBuilder
         });
     }
 
-    private object LocateInternal(Type type, bool isEnumerable, DIParameter[] parameters)
+    private object LocateInternal(Type type, bool isEnumerable, DIParameter[] parameters, Scope? scope = null)
     {
         // Fast path: check singleton cache first
         if (_singletonInstances.TryGetValue(type, out var singletonInstance))
@@ -535,7 +543,27 @@ public class ActivationBuilder
             return singletonInstance;
         }
 
+        // Fast path: check scoped cache if we have a scope
+        if (scope is not null && scope.TryGetScoped(type, out var scopedInstance) && scopedInstance is not null)
+        {
+            if (isEnumerable)
+            {
+                var scopedList = CreateListOfTType(type);
+                scopedList.Add(scopedInstance);
+                return scopedList;
+            }
+            return scopedInstance;
+        }
+
         _lifetimes.TryGetValue(type, out var lifestyleType);
+
+        // Check for scoped without a scope
+        if (lifestyleType == LifestyleType.Scoped && scope is null)
+        {
+            throw new InvalidOperationException(
+                $"Cannot resolve scoped service '{type.FullName}' from the root container. " +
+                "Use container.CreateScope() and resolve from the scope instead.");
+        }
 
         if (_constructors.TryGetValue(type, out var constructors))
         {
@@ -545,7 +573,7 @@ public class ActivationBuilder
 
                 foreach (var ctor in constructors)
                 {
-                    if (ctor.CanSatisfy(parameters.Length) && TryActivate(ctor, type, lifestyleType, parameters, out var val))
+                    if (ctor.CanSatisfy(parameters.Length) && TryActivate(ctor, type, lifestyleType, parameters, scope, out var val))
                     {
                         list.Add(val);
                     }
@@ -557,7 +585,7 @@ public class ActivationBuilder
             {
                 foreach (var ctor in constructors)
                 {
-                    if (ctor.CanSatisfy(parameters.Length) && TryActivate(ctor, type, lifestyleType, parameters, out var val))
+                    if (ctor.CanSatisfy(parameters.Length) && TryActivate(ctor, type, lifestyleType, parameters, scope, out var val))
                     {
                         return val;
                     }
@@ -582,13 +610,20 @@ public class ActivationBuilder
         return factory();
     }
 
-    private bool TryActivate(CachedConstructor c, Type type, LifestyleType lifestyleType, DIParameter[] runtimeParameters, out object val)
+    private bool TryActivate(CachedConstructor c, Type type, LifestyleType lifestyleType, DIParameter[] runtimeParameters, Scope? scope, out object val)
     {
         var paramCount = c.ParameterCount;
-        
+
         // Fast path: parameterless constructor
         if (paramCount == 0)
         {
+            // For scoped services, use the scope's GetOrAddScoped
+            if (lifestyleType == LifestyleType.Scoped && scope is not null)
+            {
+                val = scope.GetOrAddScoped(type, () => c.ConstructorFunc(EmptyObjectArray));
+                return val is not null;
+            }
+
             var noParamsInstance = c.ConstructorFunc(EmptyObjectArray);
 
             if (noParamsInstance is null)
@@ -670,10 +705,10 @@ public class ActivationBuilder
                 if (foundParameter)
                     continue;
 
-                // Try to resolve from container
+                // Try to resolve from container (pass scope for scoped dependencies)
                 if (_constructors.ContainsKey(paramType) || _alias.ContainsKey(paramType))
                 {
-                    parameters[i] = Locate(paramType);
+                    parameters[i] = LocateWithScope(paramType, scope, EmptyParameters);
                     continue;
                 }
 
@@ -687,6 +722,17 @@ public class ActivationBuilder
                 // Could not satisfy parameter
                 val = default!;
                 return false;
+            }
+
+            // For scoped services, use the scope's GetOrAddScoped
+            if (lifestyleType == LifestyleType.Scoped && scope is not null)
+            {
+                // Need to capture parameters for the factory
+                var capturedParams = new object?[paramCount];
+                Array.Copy(parameters, capturedParams, paramCount);
+
+                val = scope.GetOrAddScoped(type, () => c.ConstructorFunc(capturedParams));
+                return val is not null;
             }
 
             var instance = c.ConstructorFunc(parameters);
@@ -711,4 +757,21 @@ public class ActivationBuilder
             ParamPool.Return(parameters, clearArray: true);
         }
     }
+
+    /// <summary>
+    /// Creates a new scope for resolving scoped dependencies.
+    /// </summary>
+    /// <returns>A new <see cref="IScope"/> instance.</returns>
+    /// <example>
+    /// <code>
+    /// // Per-player scope
+    /// var playerScope = container.CreateScope();
+    /// var inventory = playerScope.Locate&lt;IInventory&gt;();
+    /// var stats = playerScope.Locate&lt;IPlayerStats&gt;();
+    ///
+    /// // When player disconnects
+    /// playerScope.Dispose();
+    /// </code>
+    /// </example>
+    public IScope CreateScope() => new Scope(this);
 }

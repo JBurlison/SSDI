@@ -15,7 +15,18 @@ public enum LifestyleType
     /// A single instance is created for the lifetime of the application.
     /// The instance is created lazily on first resolution.
     /// </summary>
-    Singleton
+    Singleton,
+
+    /// <summary>
+    /// A single instance is created per scope. Different scopes get different instances.
+    /// Scoped instances are disposed when the scope is disposed.
+    /// </summary>
+    /// <remarks>
+    /// Scoped services must be resolved from an <see cref="IScope"/> created via
+    /// <see cref="Builder.ActivationBuilder.CreateScope"/>. Attempting to resolve
+    /// a scoped service directly from the container will throw an exception.
+    /// </remarks>
+    Scoped
 }
 
 /// <summary>
@@ -89,6 +100,36 @@ public class LifestyleScope
 
         _set = true;
         Lifestyle = LifestyleType.Transient;
+        return _registrationBlock;
+    }
+
+    /// <summary>
+    /// Configures the registration to use scoped lifetime.
+    /// A single instance is created per scope, and disposed when the scope is disposed.
+    /// Can only be called once per registration.
+    /// </summary>
+    /// <returns>The parent <see cref="FluentExportRegistration"/> for method chaining.</returns>
+    /// <exception cref="InvalidOperationException">Thrown if the lifestyle has already been set.</exception>
+    /// <example>
+    /// <code>
+    /// container.Configure(c =>
+    /// {
+    ///     c.Export&lt;PlayerInventory&gt;().Lifestyle.Scoped();
+    ///     c.Export&lt;PlayerStats&gt;().As&lt;IPlayerStats&gt;().Lifestyle.Scoped();
+    /// });
+    ///
+    /// // Create a scope per player
+    /// using var playerScope = container.CreateScope();
+    /// var inventory = playerScope.Locate&lt;PlayerInventory&gt;(); // Same instance within scope
+    /// </code>
+    /// </example>
+    public FluentExportRegistration Scoped()
+    {
+        if (_set)
+            throw new InvalidOperationException("Lifestyle already set.");
+
+        _set = true;
+        Lifestyle = LifestyleType.Scoped;
         return _registrationBlock;
     }
 

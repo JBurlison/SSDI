@@ -9,6 +9,7 @@ A lightweight dependency injection framework for .NET designed for console appli
 
 - ✅ **No container build step** — Register types at any time
 - ✅ **Runtime extensibility** — Perfect for plugin architectures
+- ✅ **Scoped lifetime** — Per-player, per-request, or per-session instances
 - ✅ **Unregister support** — Remove registrations and hot-swap implementations
 - ✅ **Lightweight** — Minimal overhead, ideal for games
 - ✅ **Simple API** — Easy to learn and use
@@ -36,21 +37,119 @@ var service = container.Locate<MyService>();
 
 ## Lifecycle Management
 
-SSDI supports two lifestyles:
+SSDI supports three lifestyles:
 
 | Lifestyle | Description |
 |-----------|-------------|
 | **Transient** (default) | Creates a new instance every time it's resolved |
 | **Singleton** | Creates one instance for the application lifetime |
+| **Scoped** | Creates one instance per scope (e.g., per-player, per-request) |
 
 ```cs
 container.Configure(c =>
 {
-    c.Export<GameEngine>().Lifestyle.Singleton();  // One instance
+    c.Export<GameEngine>().Lifestyle.Singleton();  // One instance for app lifetime
     c.Export<Enemy>().Lifestyle.Transient();       // New instance each time (default)
-    c.Export<Projectile>();                         // Transient is the default
+    c.Export<Projectile>();                        // Transient is the default
+    c.Export<PlayerInventory>().Lifestyle.Scoped(); // One instance per scope
 });
 ```
+
+## Scoped Lifetime
+
+Scoped services are perfect for per-player, per-request, or per-session data. Each scope maintains its own instances of scoped services, and all scoped instances are disposed when the scope is disposed.
+
+### Basic Usage
+
+```cs
+// Register scoped services
+container.Configure(c =>
+{
+    c.Export<PlayerInventory>().As<IInventory>().Lifestyle.Scoped();
+    c.Export<PlayerStats>().Lifestyle.Scoped();
+    c.Export<SessionData>().Lifestyle.Scoped();
+});
+
+// Create a scope (e.g., when a player connects)
+using var playerScope = container.CreateScope();
+
+// All resolves within the scope return the same instance
+var inventory1 = playerScope.Locate<IInventory>();
+var inventory2 = playerScope.Locate<IInventory>();
+// inventory1 == inventory2 (same instance)
+
+// When the scope is disposed, all scoped IDisposable services are disposed
+```
+
+### Per-Player Scope Pattern
+
+A common pattern is to tie a scope to a player object:
+
+```cs
+public class Player : IDisposable
+{
+    public IScope Scope { get; }
+    public string Name { get; }
+
+    public Player(DependencyInjectionContainer container, string name)
+    {
+        Name = name;
+        Scope = container.CreateScope();
+    }
+
+    // Convenient accessors for player-specific services
+    public IInventory Inventory => Scope.Locate<IInventory>();
+    public PlayerStats Stats => Scope.Locate<PlayerStats>();
+    public SessionData Session => Scope.Locate<SessionData>();
+
+    public void Dispose()
+    {
+        // Disposes all scoped services (inventory, stats, session, etc.)
+        Scope.Dispose();
+    }
+}
+
+// Usage
+var player1 = new Player(container, "Alice");
+var player2 = new Player(container, "Bob");
+
+// Each player has their own inventory
+player1.Inventory.AddItem("Sword");
+player2.Inventory.AddItem("Shield");
+
+// Player disconnects - cleanup is automatic
+player1.Dispose();
+```
+
+### Scoped with Dependencies
+
+Scoped services can depend on other services with any lifetime:
+
+```cs
+container.Configure(c =>
+{
+    // Singleton - shared across all scopes
+    c.Export<GameDatabase>().As<IDatabase>().Lifestyle.Singleton();
+
+    // Scoped - one per scope, depends on singleton
+    c.Export<PlayerRepository>().Lifestyle.Scoped();
+
+    // Transient - new instance each time, even within a scope
+    c.Export<DamageCalculator>().Lifestyle.Transient();
+});
+
+using var scope = container.CreateScope();
+
+var repo1 = scope.Locate<PlayerRepository>(); // Uses shared IDatabase
+var repo2 = scope.Locate<PlayerRepository>(); // Same repo instance
+// repo1 == repo2
+```
+
+### Important Notes
+
+- **Scoped services require a scope**: Attempting to resolve a scoped service directly from the container throws an `InvalidOperationException`. Always use `container.CreateScope()` first.
+- **Disposal**: When a scope is disposed, all scoped services implementing `IDisposable` or `IAsyncDisposable` are automatically disposed.
+- **Async disposal**: Use `await using` for async disposal: `await using var scope = container.CreateScope();`
 
 ## Registering Instances
 
