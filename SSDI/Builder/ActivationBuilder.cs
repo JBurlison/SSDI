@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
+using SSDI.Events;
 using SSDI.Parameters;
 using SSDI.Registration;
 
@@ -52,6 +53,24 @@ public class ActivationBuilder
     // ArrayPool for parameter arrays
     private static readonly ArrayPool<object?> ParamPool = ArrayPool<object?>.Shared;
 
+    /// <summary>
+    /// Occurs when a type is unregistered from the container.
+    /// </summary>
+    /// <remarks>
+    /// This event fires after the type has been removed from the container and any singleton instance has been disposed.
+    /// </remarks>
+    /// <example>
+    /// <code>
+    /// container.Unregistered += (sender, args) =>
+    /// {
+    ///     Console.WriteLine($"Unregistered: {args.UnregisteredType.Name}");
+    ///     if (args.WasDisposed)
+    ///         Console.WriteLine("  Instance was disposed");
+    /// };
+    /// </code>
+    /// </example>
+    public event EventHandler<UnregisteredEventArgs>? Unregistered;
+
     internal void Add(ExportRegistration reg)
     {
         foreach (var exportRegistration in reg.Registrations)
@@ -79,7 +98,8 @@ public class ActivationBuilder
             }
 
             // Build constructor array - merge with existing if any
-            var ctorInfos = exportedType.GetConstructors();
+            // Include both public and non-public constructors for flexibility
+            var ctorInfos = exportedType.GetConstructors(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
             var newCtors = new CachedConstructor[ctorInfos.Length];
             
             for (var i = 0; i < ctorInfos.Length; i++)
@@ -137,6 +157,8 @@ public class ActivationBuilder
     public bool Unregister(Type type, bool removeFromAliases = true)
     {
         var removed = false;
+        object? removedInstance = null;
+        var wasDisposed = false;
 
         // Remove constructors
         if (_constructors.TryRemove(type, out _))
@@ -150,14 +172,17 @@ public class ActivationBuilder
         // Remove singleton instance and dispose if applicable
         if (_singletonInstances.TryRemove(type, out var instance))
         {
+            removedInstance = instance;
             if (instance is IDisposable disposable)
             {
                 disposable.Dispose();
+                wasDisposed = true;
             }
 #if NET8_0_OR_GREATER
             else if (instance is IAsyncDisposable asyncDisposable)
             {
                 asyncDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                wasDisposed = true;
             }
 #endif
             removed = true;
@@ -176,6 +201,12 @@ public class ActivationBuilder
                         (_, existing) => existing.Remove(type));
                 }
             }
+        }
+
+        // Fire event if something was removed
+        if (removed)
+        {
+            Unregistered?.Invoke(this, new UnregisteredEventArgs(type, removedInstance, wasDisposed));
         }
 
         return removed;
