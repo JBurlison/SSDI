@@ -359,6 +359,294 @@ public class ParameterInjectionTests
 
     #endregion
 
+    #region Combined Registration and Runtime Parameters
+
+    [TestMethod]
+    public void CombinedParams_RegisterFirstParam_LocateSecondParam()
+    {
+        // Arrange - Register host at registration time, provide port at locate time
+        var container = new DependencyInjectionContainer();
+        container.Configure(c =>
+            c.Export<ServiceWithParameters>()
+                .WithCtorParam(0, "localhost")); // Register name at position 0
+
+        // Act - Provide port at locate time
+        var result = container.Locate<ServiceWithParameters>(
+            DIParameter.Positional(1, 9090));
+
+        // Assert
+        Assert.AreEqual("localhost", result.Name);
+        Assert.AreEqual(9090, result.Port);
+    }
+
+    [TestMethod]
+    public void CombinedParams_RegisterSecondParam_LocateFirstParam()
+    {
+        // Arrange - Register port at registration time, provide name at locate time
+        var container = new DependencyInjectionContainer();
+        container.Configure(c =>
+            c.Export<ServiceWithParameters>()
+                .WithCtorParam(1, 8080)); // Register port at position 1
+
+        // Act - Provide name at locate time
+        var result = container.Locate<ServiceWithParameters>(
+            DIParameter.Positional(0, "runtime-host"));
+
+        // Assert
+        Assert.AreEqual("runtime-host", result.Name);
+        Assert.AreEqual(8080, result.Port);
+    }
+
+    [TestMethod]
+    public void CombinedParams_RegisterFirstTwo_LocateThird()
+    {
+        // Arrange - Register host and port, provide useSsl at runtime
+        var container = new DependencyInjectionContainer();
+        container.Configure(c =>
+            c.Export<ServiceWithThreeParameters>()
+                .WithCtorParam(0, "example.com")
+                .WithCtorParam(1, 443));
+
+        // Act
+        var result = container.Locate<ServiceWithThreeParameters>(
+            DIParameter.Positional(2, true));
+
+        // Assert
+        Assert.AreEqual("example.com", result.Host);
+        Assert.AreEqual(443, result.Port);
+        Assert.IsTrue(result.UseSsl);
+    }
+
+    [TestMethod]
+    public void CombinedParams_RegisterMiddleParam_LocateFirstAndLast()
+    {
+        // Arrange - Register only the middle parameter (port)
+        var container = new DependencyInjectionContainer();
+        container.Configure(c =>
+            c.Export<ServiceWithThreeParameters>()
+                .WithCtorParam(1, 8080));
+
+        // Act - Provide first and last at runtime
+        var result = container.Locate<ServiceWithThreeParameters>(
+            DIParameter.Positional(0, "api.server.com"),
+            DIParameter.Positional(2, false));
+
+        // Assert
+        Assert.AreEqual("api.server.com", result.Host);
+        Assert.AreEqual(8080, result.Port);
+        Assert.IsFalse(result.UseSsl);
+    }
+
+    [TestMethod]
+    public void CombinedParams_RegisterByName_LocateByPosition()
+    {
+        // Arrange - Register host by name
+        var container = new DependencyInjectionContainer();
+        container.Configure(c =>
+            c.Export<ServiceWithThreeParameters>()
+                .WithCtorParam("host", "named-host"));
+
+        // Act - Provide port and useSsl by position
+        var result = container.Locate<ServiceWithThreeParameters>(
+            DIParameter.Positional(1, 3000),
+            DIParameter.Positional(2, true));
+
+        // Assert
+        Assert.AreEqual("named-host", result.Host);
+        Assert.AreEqual(3000, result.Port);
+        Assert.IsTrue(result.UseSsl);
+    }
+
+    [TestMethod]
+    public void CombinedParams_RegisterByPosition_LocateByName()
+    {
+        // Arrange - Register host by position
+        var container = new DependencyInjectionContainer();
+        container.Configure(c =>
+            c.Export<ServiceWithThreeParameters>()
+                .WithCtorParam(0, "positional-host"));
+
+        // Act - Provide port and useSsl by name
+        var result = container.Locate<ServiceWithThreeParameters>(
+            DIParameter.Named("port", 5000),
+            DIParameter.Named("useSsl", false));
+
+        // Assert
+        Assert.AreEqual("positional-host", result.Host);
+        Assert.AreEqual(5000, result.Port);
+        Assert.IsFalse(result.UseSsl);
+    }
+
+    [TestMethod]
+    public void CombinedParams_RegisterByType_LocateMissingByPosition()
+    {
+        // Arrange - Register bool by type (useSsl)
+        var container = new DependencyInjectionContainer();
+        container.Configure(c =>
+            c.Export<ServiceWithThreeParameters>()
+                .WithCtorParam(true)); // bool matches useSsl
+
+        // Act - Provide host and port at runtime
+        var result = container.Locate<ServiceWithThreeParameters>(
+            DIParameter.Positional(0, "typed-host"),
+            DIParameter.Positional(1, 7777));
+
+        // Assert
+        Assert.AreEqual("typed-host", result.Host);
+        Assert.AreEqual(7777, result.Port);
+        Assert.IsTrue(result.UseSsl);
+    }
+
+    [TestMethod]
+    public void CombinedParams_WithDependency_RegisterSomeParams_LocateOthers()
+    {
+        // Arrange - Register dependency and host, provide port and useSsl at runtime
+        var container = new DependencyInjectionContainer();
+        container.Configure(c =>
+        {
+            c.Export<SimpleService>();
+            c.Export<ServiceWithDependencyAndThreeParameters>()
+                .WithCtorParam("host", "injected-host");
+        });
+
+        // Act
+        var result = container.Locate<ServiceWithDependencyAndThreeParameters>(
+            DIParameter.Named("port", 6060),
+            DIParameter.Named("useSsl", true));
+
+        // Assert
+        Assert.IsNotNull(result.Dependency);
+        Assert.AreEqual("injected-host", result.Host);
+        Assert.AreEqual(6060, result.Port);
+        Assert.IsTrue(result.UseSsl);
+    }
+
+    [TestMethod]
+    public void CombinedParams_FourParams_RegisterTwoAlternating_LocateOtherTwo()
+    {
+        // Arrange - Register host (0) and username (2)
+        var container = new DependencyInjectionContainer();
+        container.Configure(c =>
+            c.Export<ServiceWithFourParameters>()
+                .WithCtorParam(0, "db.server.com")
+                .WithCtorParam(2, "admin"));
+
+        // Act - Provide port (1) and password (3)
+        var result = container.Locate<ServiceWithFourParameters>(
+            DIParameter.Positional(1, 5432),
+            DIParameter.Positional(3, "secret123"));
+
+        // Assert
+        Assert.AreEqual("db.server.com", result.Host);
+        Assert.AreEqual(5432, result.Port);
+        Assert.AreEqual("admin", result.Username);
+        Assert.AreEqual("secret123", result.Password);
+    }
+
+    [TestMethod]
+    public void CombinedParams_RegisteredParamsTakePrecedence()
+    {
+        // Arrange - Register all params at registration time
+        var container = new DependencyInjectionContainer();
+        container.Configure(c =>
+            c.Export<ServiceWithParameters>()
+                .WithCtorParam(0, "registered-name")
+                .WithCtorParam(1, 1111));
+
+        // Act - Try to override name at runtime
+        var result = container.Locate<ServiceWithParameters>(
+            DIParameter.Positional(0, "runtime-override"));
+
+        // Assert - registered params take precedence over runtime params
+        Assert.AreEqual("registered-name", result.Name);
+        Assert.AreEqual(1111, result.Port);
+    }
+
+    [TestMethod]
+    public void CombinedParams_LocateWithPositionalParams_FillsGaps()
+    {
+        // Arrange - Register middle param
+        var container = new DependencyInjectionContainer();
+        container.Configure(c =>
+            c.Export<ServiceWithThreeParameters>()
+                .WithCtorParam(1, 9999)); // port in the middle
+
+        // Act - Use LocateWithPositionalParams (starts at position 0)
+        // This should fill position 0 and 2
+        var result = container.LocateWithPositionalParams<ServiceWithThreeParameters>(
+            "positional-host", 9999, true);
+
+        // Assert
+        Assert.AreEqual("positional-host", result.Host);
+        Assert.AreEqual(9999, result.Port); // Could be either - runtime wins
+        Assert.IsTrue(result.UseSsl);
+    }
+
+    [TestMethod]
+    public void CombinedParams_LocateWithTypedParams_FillsMissingTypes()
+    {
+        // Arrange - Register the int param (port)
+        var container = new DependencyInjectionContainer();
+        container.Configure(c =>
+            c.Export<ServiceWithThreeParameters>()
+                .WithCtorParam(8080)); // int type matches port
+
+        // Act - Provide string (host) and bool (useSsl) at runtime
+        var result = container.LocateWithTypedParams<ServiceWithThreeParameters>(
+            "typed-host", false);
+
+        // Assert
+        Assert.AreEqual("typed-host", result.Host);
+        Assert.AreEqual(8080, result.Port);
+        Assert.IsFalse(result.UseSsl);
+    }
+
+    [TestMethod]
+    public void CombinedParams_LocateWithNamedParams_FillsMissingNames()
+    {
+        // Arrange - Register host
+        var container = new DependencyInjectionContainer();
+        container.Configure(c =>
+            c.Export<ServiceWithThreeParameters>()
+                .WithCtorParam("host", "registered-host"));
+
+        // Act - Provide port and useSsl by name
+        var result = container.LocateWithNamedParameters<ServiceWithThreeParameters>(
+            ("port", 4040),
+            ("useSsl", true));
+
+        // Assert
+        Assert.AreEqual("registered-host", result.Host);
+        Assert.AreEqual(4040, result.Port);
+        Assert.IsTrue(result.UseSsl);
+    }
+
+    [TestMethod]
+    public void CombinedParams_SingletonWithRuntimeParams_FirstCallWins()
+    {
+        // Arrange - Register as singleton with one param
+        var container = new DependencyInjectionContainer();
+        container.Configure(c =>
+            c.Export<ServiceWithParameters>()
+                .WithCtorParam(0, "singleton-name")
+                .Lifestyle.Singleton());
+
+        // Act - First locate with runtime param
+        var result1 = container.Locate<ServiceWithParameters>(
+            DIParameter.Positional(1, 1111));
+
+        // Second locate with different runtime param
+        var result2 = container.Locate<ServiceWithParameters>(
+            DIParameter.Positional(1, 2222));
+
+        // Assert - Both should be same instance (singleton)
+        Assert.AreSame(result1, result2);
+        Assert.AreEqual("singleton-name", result1.Name);
+        Assert.AreEqual(1111, result1.Port); // First call's value wins
+    }
+
+    #endregion
+
     #region Multiple Constructors
 
     [TestMethod]

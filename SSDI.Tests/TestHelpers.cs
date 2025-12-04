@@ -144,3 +144,52 @@ public class ServiceWithMultipleConstructors
         Port = port;
     }
 }
+
+// Class with three parameters for combined registration/runtime tests
+public class ServiceWithThreeParameters
+{
+    public string Host { get; }
+    public int Port { get; }
+    public bool UseSsl { get; }
+
+    public ServiceWithThreeParameters(string host, int port, bool useSsl)
+    {
+        Host = host;
+        Port = port;
+        UseSsl = useSsl;
+    }
+}
+
+// Class with four parameters for comprehensive combined tests
+public class ServiceWithFourParameters
+{
+    public string Host { get; }
+    public int Port { get; }
+    public string Username { get; }
+    public string Password { get; }
+
+    public ServiceWithFourParameters(string host, int port, string username, string password)
+    {
+        Host = host;
+        Port = port;
+        Username = username;
+        Password = password;
+    }
+}
+
+// Class with mixed DI dependencies and primitive parameters
+public class ServiceWithDependencyAndThreeParameters
+{
+    public SimpleService Dependency { get; }
+    public string Host { get; }
+    public int Port { get; }
+    public bool UseSsl { get; }
+
+    public ServiceWithDependencyAndThreeParameters(SimpleService dependency, string host, int port, bool useSsl)
+    {
+        Dependency = dependency;
+        Host = host;
+        Port = port;
+        UseSsl = useSsl;
+    }
+}

@@ -3,23 +3,15 @@
 [![NuGet](https://img.shields.io/nuget/v/SSDI.svg)](https://www.nuget.org/packages/SSDI/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A lightweight dependency injection framework for .NET designed for console applications and games. Unlike traditional DI containers, **SSDI does not require a "build" step** — you can add registrations at any point during your application's lifecycle, making it perfect for plugin systems and dynamically loaded assemblies.
+A lightweight, high-performance dependency injection framework for .NET designed for games and console applications. **No container build step required** — register types at any point during your application's lifecycle.
 
 ## Features
 
-- ✅ **No container build step** — Register types at any time
-- ✅ **Runtime extensibility** — Perfect for plugin architectures
-- ✅ **Scoped lifetime** — Per-player, per-request, or per-session instances
-- ✅ **Unregister support** — Remove registrations and hot-swap implementations
-- ✅ **Lightweight** — Minimal overhead, ideal for games
-- ✅ **Simple API** — Easy to learn and use
-- ✅ **Multiple parameter binding options** — By type, name, or position
-
-## Installation
-
-```bash
-dotnet add package SSDI
-```
+- **No build step** — Register types dynamically at runtime
+- **Fast resolution** — Optimized for game loops and high-frequency calls
+- **Scoped lifetime** — Per-player, per-request, or per-session instances
+- **Unregister support** — Hot-swap implementations at runtime
+- **Lightweight** — Minimal allocations, ideal for games
 
 ## Quick Start
 
@@ -30,874 +22,206 @@ container.Configure(c =>
 {
     c.Export<MyService>();
     c.Export<MyRepository>().Lifestyle.Singleton();
+    c.Export<PlayerData>().As<IPlayerData>().Lifestyle.Scoped();
 });
 
 var service = container.Locate<MyService>();
 ```
 
-## Lifecycle Management
-
-SSDI supports three lifestyles:
+## Lifestyles
 
 | Lifestyle | Description |
 |-----------|-------------|
-| **Transient** (default) | Creates a new instance every time it's resolved |
-| **Singleton** | Creates one instance for the application lifetime |
-| **Scoped** | Creates one instance per scope (e.g., per-player, per-request) |
+| **Transient** (default) | New instance every resolution |
+| **Singleton** | One instance for app lifetime |
+| **Scoped** | One instance per scope |
 
 ```cs
 container.Configure(c =>
 {
-    c.Export<GameEngine>().Lifestyle.Singleton();  // One instance for app lifetime
-    c.Export<Enemy>().Lifestyle.Transient();       // New instance each time (default)
-    c.Export<Projectile>();                        // Transient is the default
-    c.Export<PlayerInventory>().Lifestyle.Scoped(); // One instance per scope
+    c.Export<GameEngine>().Lifestyle.Singleton();
+    c.Export<Enemy>();  // Transient by default
+    c.Export<PlayerInventory>().Lifestyle.Scoped();
 });
 ```
 
-## Scoped Lifetime
-
-Scoped services are perfect for per-player, per-request, or per-session data. Each scope maintains its own instances of scoped services, and all scoped instances are disposed when the scope is disposed.
-
-### Basic Usage
+## Scoped Services
 
 ```cs
-// Register scoped services
-container.Configure(c =>
-{
-    c.Export<PlayerInventory>().As<IInventory>().Lifestyle.Scoped();
-    c.Export<PlayerStats>().Lifestyle.Scoped();
-    c.Export<SessionData>().Lifestyle.Scoped();
-});
-
-// Create a scope (e.g., when a player connects)
+// Create a scope (e.g., per player)
 using var playerScope = container.CreateScope();
 
-// All resolves within the scope return the same instance
 var inventory1 = playerScope.Locate<IInventory>();
 var inventory2 = playerScope.Locate<IInventory>();
-// inventory1 == inventory2 (same instance)
+// Same instance within scope
 
-// When the scope is disposed, all scoped IDisposable services are disposed
+// All scoped IDisposable services disposed when scope ends
 ```
 
-### Per-Player Scope Pattern
+## Interface Registration
 
-A common pattern is to tie a scope to a player object:
-
-```cs
-public class Player : IDisposable
-{
-    public IScope Scope { get; }
-    public string Name { get; }
-
-    public Player(DependencyInjectionContainer container, string name)
-    {
-        Name = name;
-        Scope = container.CreateScope();
-    }
-
-    // Convenient accessors for player-specific services
-    public IInventory Inventory => Scope.Locate<IInventory>();
-    public PlayerStats Stats => Scope.Locate<PlayerStats>();
-    public SessionData Session => Scope.Locate<SessionData>();
-
-    public void Dispose()
-    {
-        // Disposes all scoped services (inventory, stats, session, etc.)
-        Scope.Dispose();
-    }
-}
-
-// Usage
-var player1 = new Player(container, "Alice");
-var player2 = new Player(container, "Bob");
-
-// Each player has their own inventory
-player1.Inventory.AddItem("Sword");
-player2.Inventory.AddItem("Shield");
-
-// Player disconnects - cleanup is automatic
-player1.Dispose();
-```
-
-### Scoped with Dependencies
-
-Scoped services can depend on other services with any lifetime:
+SSDI requires explicit interface registration:
 
 ```cs
 container.Configure(c =>
 {
-    // Singleton - shared across all scopes
-    c.Export<GameDatabase>().As<IDatabase>().Lifestyle.Singleton();
-
-    // Scoped - one per scope, depends on singleton
-    c.Export<PlayerRepository>().Lifestyle.Scoped();
-
-    // Transient - new instance each time, even within a scope
-    c.Export<DamageCalculator>().Lifestyle.Transient();
-});
-
-using var scope = container.CreateScope();
-
-var repo1 = scope.Locate<PlayerRepository>(); // Uses shared IDatabase
-var repo2 = scope.Locate<PlayerRepository>(); // Same repo instance
-// repo1 == repo2
-```
-
-### Important Notes
-
-- **Scoped services require a scope**: Attempting to resolve a scoped service directly from the container throws an `InvalidOperationException`. Always use `container.CreateScope()` first.
-- **Disposal**: When a scope is disposed, all scoped services implementing `IDisposable` or `IAsyncDisposable` are automatically disposed.
-- **Async disposal**: Use `await using` for async disposal: `await using var scope = container.CreateScope();`
-
-## Registering Instances
-
-You can register pre-built instances directly:
-
-```cs
-var configuration = new ConfigurationBuilder()
-    .SetBasePath(Directory.GetCurrentDirectory())
-    .AddJsonFile("appsettings.json")
-    .Build();
-
-container.Configure(c =>
-{
-    // Register an existing instance (always treated as Singleton)
-    c.ExportInstance(configuration).As<IConfiguration>();
-});
-```
-
-## Interface Registration (Aliases)
-
-**Important:** SSDI does not automatically discover interfaces. You must explicitly register aliases for any interfaces you want to resolve by:
-
-```cs
-container.Configure(c =>
-{
-    // Register implementations with their interfaces
     c.Export<SqlRepository>().As<IRepository>();
-    c.Export<FileLogger>().As<ILogger>();
-    
-    // Multiple implementations of the same interface
-    c.Export<AuthPacketHandler>().As<IPacketHandler>();
-    c.Export<GamePacketHandler>().As<IPacketHandler>();
-    c.Export<ChatPacketHandler>().As<IPacketHandler>();
+
+    // Multiple implementations
+    c.Export<AuthHandler>().As<IPacketHandler>();
+    c.Export<GameHandler>().As<IPacketHandler>();
 });
 
-// Resolve a single implementation
-var logger = container.Locate<ILogger>();
-
-// Resolve ALL implementations of an interface
+// Resolve all implementations
 var handlers = container.Locate<IEnumerable<IPacketHandler>>();
-foreach (var handler in handlers)
-{
-    handler.Initialize();
-}
 ```
 
-## Constructor Parameter Injection
+## Constructor Parameters
 
-SSDI provides multiple ways to specify constructor parameters:
-
-### By Type
 ```cs
 container.Configure(c =>
 {
-    c.Export<GameServer>()
-        .WithCtorParam<int>(8080)           // Matches any int parameter
-        .WithCtorParam<string>("GameServer") // Matches any string parameter
-        .Lifestyle.Singleton();
+    // By type
+    c.Export<GameServer>().WithCtorParam<int>(8080);
+
+    // By name
+    c.Export<GameServer>().WithCtorParam("port", 8080);
+
+    // By position
+    c.Export<GameServer>().WithCtorParam(0, "MyServer");
+
+    // Multiple positional
+    c.Export<GameServer>().WithCtorPositionalParams("MyServer", 8080, true);
 });
 ```
 
-### By Parameter Name
+## Combined Registration and Runtime Parameters
+
+Register some parameters at configuration time, provide others at resolution:
+
 ```cs
+// Register host at configuration time
 container.Configure(c =>
-{
-    // Constructor: GameServer(string serverName, int port, bool enableLogging)
     c.Export<GameServer>()
-        .WithCtorParam("serverName", "MyServer")
-        .WithCtorParam("port", 8080)
-        .WithCtorParam("enableLogging", true)
-        .Lifestyle.Singleton();
-});
+        .WithCtorParam(0, "game.server.com")
+        .WithCtorParam(1, 443));
+
+// Provide remaining parameter at runtime
+var server = container.Locate<GameServer>(
+    DIParameter.Positional(2, true)); // useSsl
 ```
 
-### By Position (0-based)
+## Unregistered Event
+
+Subscribe to notifications when services are unregistered:
+
 ```cs
-container.Configure(c =>
+container.Unregistered += (sender, args) =>
 {
-    // Constructor: GameServer(string serverName, int port, bool enableLogging)
-    c.Export<GameServer>()
-        .WithCtorParam(0, "MyServer")  // Position 0: serverName
-        .WithCtorParam(1, 8080)        // Position 1: port
-        .WithCtorParam(2, true)        // Position 2: enableLogging
-        .Lifestyle.Singleton();
-});
-```
-
-### Multiple Positional Parameters at Once
-```cs
-container.Configure(c =>
-{
-    // Provide multiple params starting at position 0
-    c.Export<GameServer>()
-        .WithCtorPositionalParams("MyServer", 8080, true)
-        .Lifestyle.Singleton();
-});
-```
-
-## Locating Services with Parameters
-
-You can also provide parameters when resolving:
-
-```cs
-// Simple locate
-var server = container.Locate<TCPServer>();
-
-// With a single positional parameter
-var server = container.Locate<TCPServer>(0, "127.0.0.1");
-
-// With positional parameters (starting at position 0)
-var server = container.LocateWithPositionalParams<TCPServer>("127.0.0.1", 8080);
-
-// With typed parameters (matched by type)
-var server = container.LocateWithTypedParams<TCPServer>("127.0.0.1", 8080);
-
-// With named parameters
-var server = container.LocateWithNamedParameters<TCPServer>(
-    ("address", "127.0.0.1"), 
-    ("port", 8080)
-);
+    Console.WriteLine($"Unregistered: {args.UnregisteredType.Name}");
+    if (args.WasDisposed)
+        Console.WriteLine("  Instance was disposed");
+};
 ```
 
 ## Unregistering Services
 
-SSDI supports removing registrations at runtime, which is useful for plugin unloading, hot-swapping implementations, or cleaning up resources.
-
-### Unregister a Specific Type
 ```cs
-// Unregister a type and remove it from all aliases (interfaces)
+// Unregister a type (disposes singleton if IDisposable)
 container.Unregister<OldService>();
 
-// Unregister a type but keep it in alias sets
-container.Unregister<OldService>(removeFromAliases: false);
+// Unregister all implementations of an interface
+container.UnregisterAll<IPacketHandler>();
+
+// Check registration
+if (container.IsRegistered<ILogger>()) { ... }
 ```
 
-### Unregister All Implementations of an Interface
-```cs
-// Remove all implementations registered under IPacketHandler
-int count = container.UnregisterAll<IPacketHandler>();
-Console.WriteLine($"Removed {count} packet handlers");
-```
+## Pre-built Instances
 
-### Check if a Type is Registered
 ```cs
-if (container.IsRegistered<ILogger>())
-{
-    var logger = container.Locate<ILogger>();
-}
-```
-
-### Example: Hot-Swapping a Service
-```cs
-// Initial registration
+var config = LoadConfiguration();
 container.Configure(c =>
 {
-    c.Export<FileLogger>().As<ILogger>().Lifestyle.Singleton();
+    c.ExportInstance(config).As<IConfiguration>();
 });
+```
 
-var logger = container.Locate<ILogger>();
-logger.Log("Using file logger");
+## Dynamic Registration
 
-// Hot-swap to a different implementation
-container.Unregister<FileLogger>(removeFromAliases: true);
+Perfect for plugin systems and runtime extensibility:
+
+```cs
+// Load plugin assembly
+var assembly = Assembly.LoadFrom(pluginPath);
+
 container.Configure(c =>
 {
-    c.Export<CloudLogger>().As<ILogger>().Lifestyle.Singleton();
+    foreach (var type in assembly.GetTypes()
+        .Where(t => typeof(IPlugin).IsAssignableFrom(t) && !t.IsAbstract))
+    {
+        c.Export(type).As<IPlugin>();
+    }
 });
 
-// New logger is now in use
-logger = container.Locate<ILogger>();
-logger.Log("Now using cloud logger");
+var plugins = container.Locate<IEnumerable<IPlugin>>();
 ```
 
-### Example: Plugin Unloading
-```cs
-public class PluginManager
-{
-    private readonly DependencyInjectionContainer _container;
-    private readonly Dictionary<string, List<Type>> _pluginTypes = new();
+## Performance
 
-    public void LoadPlugin(string pluginId, Assembly assembly)
-    {
-        var types = new List<Type>();
-        
-        _container.Configure(c =>
-        {
-            foreach (var type in assembly.GetTypes()
-                .Where(t => typeof(IPlugin).IsAssignableFrom(t) && !t.IsAbstract))
-            {
-                c.Export(type).As<IPlugin>();
-                types.Add(type);
-            }
-        });
-        
-        _pluginTypes[pluginId] = types;
-    }
+Benchmarks comparing SSDI against popular DI containers (Windows 11):
 
-    public void UnloadPlugin(string pluginId)
-    {
-        if (_pluginTypes.TryGetValue(pluginId, out var types))
-        {
-            foreach (var type in types)
-            {
-                // Unregister each type (disposes singletons automatically)
-                _container.Unregister(type);
-            }
-            _pluginTypes.Remove(pluginId);
-        }
-    }
-}
-```
+### Singleton Resolution
+| Container | .NET 8 | .NET 10 | Allocated |
+|-----------|-------:|--------:|----------:|
+| Grace | 4.77 ns | 2.91 ns | - |
+| **SSDI** | **6.14 ns** | **3.51 ns** | **-** |
+| MS.DI | 6.10 ns | 4.33 ns | - |
+| DryIoc | 5.56 ns | 4.78 ns | - |
+| SimpleInj | 7.96 ns | 5.16 ns | - |
+| Autofac | 100.16 ns | 87.64 ns | 808 B |
 
-### Example: Resource Cleanup on Scene Change
-```cs
-public class SceneManager
-{
-    private readonly DependencyInjectionContainer _container;
+### Transient Resolution
+| Container | .NET 8 | .NET 10 | Allocated |
+|-----------|-------:|--------:|----------:|
+| Grace | 66.75 ns | 42.34 ns | 240 B |
+| **SSDI** | **65.05 ns** | **59.30 ns** | **240 B** |
+| DryIoc | 75.99 ns | 69.39 ns | 240 B |
+| MS.DI | 81.43 ns | 70.71 ns | 240 B |
+| SimpleInj | 106.58 ns | 85.19 ns | 240 B |
+| Autofac | 1,445.70 ns | 1,346.16 ns | 8,320 B |
 
-    public void UnloadCurrentScene()
-    {
-        // Unregister all scene-specific services
-        // Singletons implementing IDisposable are automatically disposed
-        _container.UnregisterAll<ISceneService>();
-        _container.UnregisterAll<IEnemy>();
-        _container.Unregister<CurrentSceneController>();
-    }
+### Combined (Singleton + Transient)
+| Container | .NET 8 | .NET 10 | Allocated |
+|-----------|-------:|--------:|----------:|
+| Grace | 8.95 ns | 7.61 ns | 56 B |
+| MS.DI | 11.19 ns | 9.21 ns | 56 B |
+| DryIoc | 10.90 ns | 9.59 ns | 56 B |
+| SimpleInj | 13.27 ns | 9.77 ns | 56 B |
+| **SSDI** | **21.58 ns** | **17.46 ns** | **56 B** |
+| Autofac | 354.18 ns | 293.20 ns | 1,720 B |
 
-    public void LoadBattleScene()
-    {
-        UnloadCurrentScene();
-        
-        _container.Configure(c =>
-        {
-            c.Export<BattleSceneController>().As<ISceneService>().Lifestyle.Singleton();
-            c.Export<BattleUI>().As<ISceneService>().Lifestyle.Singleton();
-            c.Export<Goblin>().As<IEnemy>();
-            c.Export<Orc>().As<IEnemy>();
-            c.Export<Dragon>().As<IEnemy>();
-        });
-    }
+### Complex Graph Resolution
+| Container | .NET 8 | .NET 10 | Allocated |
+|-----------|-------:|--------:|----------:|
+| Grace | 17.81 ns | 15.96 ns | 136 B |
+| MS.DI | 18.30 ns | 16.01 ns | 136 B |
+| SimpleInj | 23.23 ns | 17.50 ns | 136 B |
+| DryIoc | 18.55 ns | 17.63 ns | 136 B |
+| **SSDI** | **70.57 ns** | **51.65 ns** | **136 B** |
+| Autofac | 1,188.41 ns | 912.56 ns | 4,384 B |
 
-    public void LoadTownScene()
-    {
-        UnloadCurrentScene();
-        
-        _container.Configure(c =>
-        {
-            c.Export<TownSceneController>().As<ISceneService>().Lifestyle.Singleton();
-            c.Export<TownUI>().As<ISceneService>().Lifestyle.Singleton();
-            c.Export<ShopKeeper>().As<INPC>();
-            c.Export<QuestGiver>().As<INPC>();
-        });
-    }
-}
-```
+### Container Setup (Registration)
+| Container | .NET 8 | .NET 10 | Allocated |
+|-----------|-------:|--------:|----------:|
+| DryIoc | 1.03 μs | 0.83 μs | 4.0 KB |
+| MS.DI | 1.33 μs | 1.45 μs | 12.4 KB |
+| Grace | 4.87 μs | 4.24 μs | 21.3 KB |
+| SimpleInj | 14.96 μs | 14.35 μs | 55.6 KB |
+| Autofac | 16.73 μs | 14.58 μs | 73.8 KB |
+| **SSDI** | **18.28 μs** | **20.96 μs** | **23.3 KB** |
 
-### Example: A/B Testing with Runtime Switching
-```cs
-public class ABTestManager
-{
-    private readonly DependencyInjectionContainer _container;
-
-    public void SwitchToVariantA()
-    {
-        // Remove current payment processor
-        _container.UnregisterAll<IPaymentProcessor>();
-        
-        _container.Configure(c =>
-        {
-            c.Export<StripeProcessor>().As<IPaymentProcessor>().Lifestyle.Singleton();
-        });
-    }
-
-    public void SwitchToVariantB()
-    {
-        // Remove current payment processor
-        _container.UnregisterAll<IPaymentProcessor>();
-        
-        _container.Configure(c =>
-        {
-            c.Export<PayPalProcessor>().As<IPaymentProcessor>().Lifestyle.Singleton();
-        });
-    }
-}
-```
-
-### Example: Graceful Service Replacement
-```cs
-public class ServiceManager
-{
-    private readonly DependencyInjectionContainer _container;
-
-    public async Task UpgradeDatabaseConnectionAsync(string newConnectionString)
-    {
-        // Check if we have an existing connection
-        if (_container.IsRegistered<IDatabaseConnection>())
-        {
-            // Unregister will dispose the old connection gracefully
-            _container.UnregisterAll<IDatabaseConnection>();
-        }
-
-        // Register the new connection
-        _container.Configure(c =>
-        {
-            c.Export<DatabaseConnection>()
-                .WithCtorParam("connectionString", newConnectionString)
-                .As<IDatabaseConnection>()
-                .Lifestyle.Singleton();
-        });
-
-        // Verify the new connection works
-        var db = _container.Locate<IDatabaseConnection>();
-        await db.TestConnectionAsync();
-    }
-}
-```
-
-### Example: Debug Mode Toggle
-```cs
-public class DebugManager
-{
-    private readonly DependencyInjectionContainer _container;
-    private bool _debugMode = false;
-
-    public void ToggleDebugMode()
-    {
-        _debugMode = !_debugMode;
-        
-        // Remove current logger
-        _container.UnregisterAll<ILogger>();
-        
-        if (_debugMode)
-        {
-            _container.Configure(c =>
-            {
-                // Verbose console logger for debugging
-                c.Export<ConsoleLogger>()
-                    .WithCtorParam("minLevel", LogLevel.Trace)
-                    .As<ILogger>()
-                    .Lifestyle.Singleton();
-                    
-                // Add debug-only services
-                c.Export<PerformanceProfiler>().Lifestyle.Singleton();
-                c.Export<MemoryTracker>().Lifestyle.Singleton();
-            });
-        }
-        else
-        {
-            _container.Configure(c =>
-            {
-                // Minimal file logger for production
-                c.Export<FileLogger>()
-                    .WithCtorParam("minLevel", LogLevel.Warning)
-                    .As<ILogger>()
-                    .Lifestyle.Singleton();
-            });
-            
-            // Remove debug services
-            _container.Unregister<PerformanceProfiler>();
-            _container.Unregister<MemoryTracker>();
-        }
-    }
-}
-```
-
-### Example: Connection Pool Management
-```cs
-public class ConnectionPoolManager
-{
-    private readonly DependencyInjectionContainer _container;
-    private readonly List<Type> _connectionTypes = new();
-
-    public void AddConnection<TConnection>() where TConnection : IConnection
-    {
-        _container.Configure(c =>
-        {
-            c.Export<TConnection>().As<IConnection>();
-        });
-        _connectionTypes.Add(typeof(TConnection));
-    }
-
-    public void RemoveConnection<TConnection>() where TConnection : IConnection
-    {
-        if (_container.Unregister<TConnection>())
-        {
-            _connectionTypes.Remove(typeof(TConnection));
-            Console.WriteLine($"Removed connection: {typeof(TConnection).Name}");
-        }
-    }
-
-    public void ClearAllConnections()
-    {
-        int removed = _container.UnregisterAll<IConnection>();
-        _connectionTypes.Clear();
-        Console.WriteLine($"Cleared {removed} connections");
-    }
-
-    public IEnumerable<IConnection> GetActiveConnections()
-    {
-        return _container.Locate<IEnumerable<IConnection>>();
-    }
-}
-```
-
-> **Note:** When unregistering a singleton that has already been instantiated, SSDI will automatically call `Dispose()` if the instance implements `IDisposable` (or `IAsyncDisposable` on .NET 8+).
-
----
-
-## Dynamic Registration Throughout Application Lifecycle
-
-One of SSDI's key features is the ability to add registrations at any time. This is essential for:
-
-- **Plugin systems** — Load plugins and register their services dynamically
-- **Game mods** — Allow mods to extend the DI container
-- **Feature toggles** — Conditionally register services based on configuration
-- **Hot reloading** — Update services without restarting the application
-
-### Example: Plugin System
-
-```cs
-public class Game
-{
-    private readonly DependencyInjectionContainer _container;
-
-    public Game()
-    {
-        _container = new DependencyInjectionContainer();
-        
-        // Initial registration - core services
-        _container.Configure(c =>
-        {
-            c.Export<GameEngine>().Lifestyle.Singleton();
-            c.Export<InputManager>().Lifestyle.Singleton();
-            c.Export<AudioManager>().Lifestyle.Singleton();
-            c.ExportInstance(LoadConfiguration()).As<IGameConfig>();
-        });
-    }
-
-    public void LoadPlugin(string pluginPath)
-    {
-        // Load plugin assembly at runtime
-        var assembly = Assembly.LoadFrom(pluginPath);
-        
-        // Plugin can register its own services
-        _container.Configure(c =>
-        {
-            // Discover and register all IGamePlugin implementations from the plugin
-            foreach (var type in assembly.GetTypes()
-                .Where(t => typeof(IGamePlugin).IsAssignableFrom(t) && !t.IsAbstract))
-            {
-                c.Export(type).As<IGamePlugin>();
-            }
-        });
-        
-        // Resolve all plugins (including newly loaded ones)
-        var plugins = _container.Locate<IEnumerable<IGamePlugin>>();
-        foreach (var plugin in plugins)
-        {
-            plugin.Initialize();
-        }
-    }
-}
-```
-
-### Example: Multi-Stage Server Setup
-
-```cs
-public class ServerApplication
-{
-    private readonly DependencyInjectionContainer _container = new();
-
-    public async Task StartAsync()
-    {
-        // Stage 1: Core infrastructure
-        _container.Configure(c =>
-        {
-            c.Export<Logger>().As<ILogger>().Lifestyle.Singleton();
-            c.Export<ConfigurationService>().Lifestyle.Singleton();
-        });
-
-        var config = _container.Locate<ConfigurationService>();
-        await config.LoadAsync();
-
-        // Stage 2: Database (depends on configuration)
-        _container.Configure(c =>
-        {
-            c.Export<DatabaseConnection>()
-                .WithCtorParam("connectionString", config.ConnectionString)
-                .Lifestyle.Singleton();
-            c.Export<UserRepository>().As<IUserRepository>();
-            c.Export<OrderRepository>().As<IOrderRepository>();
-        });
-
-        // Stage 3: Network services
-        _container.Configure(c =>
-        {
-            c.Export<TCPServer>()
-                .WithCtorParam("port", config.Port)
-                .Lifestyle.Singleton();
-            c.Export<AuthHandler>().As<IPacketHandler>();
-            c.Export<GameHandler>().As<IPacketHandler>();
-        });
-
-        // Stage 4: Optional features based on config
-        if (config.EnableMetrics)
-        {
-            _container.Configure(c =>
-            {
-                c.Export<MetricsCollector>().As<IMetricsCollector>().Lifestyle.Singleton();
-                c.Export<PrometheusExporter>().Lifestyle.Singleton();
-            });
-        }
-
-        // Start the server
-        var server = _container.Locate<TCPServer>();
-        await server.StartAsync();
-    }
-}
-```
-
-### Example: Game Scene Management
-
-```cs
-public class SceneManager
-{
-    private readonly DependencyInjectionContainer _container;
-
-    public SceneManager(DependencyInjectionContainer container)
-    {
-        _container = container;
-    }
-
-    public void LoadMainMenu()
-    {
-        _container.Configure(c =>
-        {
-            c.Export<MainMenuUI>().Lifestyle.Singleton();
-            c.Export<MenuInputHandler>().As<IInputHandler>();
-            c.Export<MenuAudioController>().As<IAudioController>();
-        });
-    }
-
-    public void LoadGameLevel(int levelNumber)
-    {
-        _container.Configure(c =>
-        {
-            c.Export<GameLevelUI>().Lifestyle.Singleton();
-            c.Export<PlayerController>().Lifestyle.Singleton();
-            c.Export<EnemySpawner>()
-                .WithCtorParam("levelNumber", levelNumber)
-                .Lifestyle.Singleton();
-            c.Export<GameInputHandler>().As<IInputHandler>();
-            c.Export<GameAudioController>().As<IAudioController>();
-            
-            // Level-specific enemies
-            c.Export<Zombie>().As<IEnemy>();
-            c.Export<Skeleton>().As<IEnemy>();
-            if (levelNumber >= 5)
-            {
-                c.Export<Boss>().As<IEnemy>();
-            }
-        });
-
-        var spawner = _container.Locate<EnemySpawner>();
-        var enemies = _container.Locate<IEnumerable<IEnemy>>();
-        spawner.RegisterEnemyTypes(enemies);
-    }
-}
-```
-
-### Example: Conditional Registration with Feature Flags
-
-```cs
-public void ConfigureServices(FeatureFlags features)
-{
-    // Always register core services
-    _container.Configure(c =>
-    {
-        c.Export<CoreService>().Lifestyle.Singleton();
-    });
-
-    // Conditionally register based on features
-    if (features.UseNewRenderer)
-    {
-        _container.Configure(c =>
-        {
-            c.Export<VulkanRenderer>().As<IRenderer>().Lifestyle.Singleton();
-        });
-    }
-    else
-    {
-        _container.Configure(c =>
-        {
-            c.Export<OpenGLRenderer>().As<IRenderer>().Lifestyle.Singleton();
-        });
-    }
-
-    if (features.EnableMultiplayer)
-    {
-        _container.Configure(c =>
-        {
-            c.Export<NetworkManager>().Lifestyle.Singleton();
-            c.Export<LobbyService>().Lifestyle.Singleton();
-            c.Export<MatchmakingService>().Lifestyle.Singleton();
-        });
-    }
-
-    if (features.EnableModding)
-    {
-        _container.Configure(c =>
-        {
-            c.Export<ModLoader>().Lifestyle.Singleton();
-            c.Export<ModRegistry>().Lifestyle.Singleton();
-        });
-        
-        // Let mods register their services
-        var modLoader = _container.Locate<ModLoader>();
-        foreach (var mod in modLoader.LoadMods())
-        {
-            mod.RegisterServices(_container);
-        }
-    }
-}
-```
-
-### Example: Testing with Mock Registrations
-
-```cs
-[TestClass]
-public class GameEngineTests
-{
-    private DependencyInjectionContainer _container;
-
-    [TestInitialize]
-    public void Setup()
-    {
-        _container = new DependencyInjectionContainer();
-        
-        // Register real services
-        _container.Configure(c =>
-        {
-            c.Export<GameEngine>().Lifestyle.Singleton();
-            c.Export<PhysicsEngine>().Lifestyle.Singleton();
-        });
-    }
-
-    [TestMethod]
-    public void TestWithMockInput()
-    {
-        // Override with mock for this test
-        _container.Configure(c =>
-        {
-            c.ExportInstance(new MockInputManager()).As<IInputManager>();
-        });
-
-        var engine = _container.Locate<GameEngine>();
-        // Test with mock input...
-    }
-
-    [TestMethod]
-    public void TestWithMockAudio()
-    {
-        // Different mock for this test
-        _container.Configure(c =>
-        {
-            c.ExportInstance(new SilentAudioManager()).As<IAudioManager>();
-        });
-
-        var engine = _container.Locate<GameEngine>();
-        // Test without audio...
-    }
-}
-```
-
----
-
-## Full Example: Game Server
-
-```cs
-public class Program
-{
-    public static async Task Main(string[] args)
-    {
-        var container = new DependencyInjectionContainer();
-
-        // Load configuration
-        var configuration = new ConfigurationBuilder()
-            .SetBasePath(Directory.GetCurrentDirectory())
-            .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-            .Build();
-
-        // Core registrations
-        container.Configure(c =>
-        {
-            // Configuration instance
-            c.ExportInstance(configuration).As<IConfiguration>();
-            
-            // Core services
-            c.Export<TCPServer>().Lifestyle.Singleton();
-            c.Export<PacketRouter>().Lifestyle.Singleton();
-            
-            // Packet handlers (multiple implementations)
-            c.Export<AuthPacketHandler>().As<IPacketHandler>();
-            c.Export<GamePacketHandler>().As<IPacketHandler>();
-            c.Export<ChatPacketHandler>().As<IPacketHandler>();
-            
-            // Repositories
-            c.Export<PlayerRepository>().As<IPlayerRepository>();
-            c.Export<InventoryRepository>().As<IInventoryRepository>();
-        });
-
-        // Load plugins
-        var pluginsPath = Path.Combine(Directory.GetCurrentDirectory(), "plugins");
-        if (Directory.Exists(pluginsPath))
-        {
-            foreach (var pluginDll in Directory.GetFiles(pluginsPath, "*.dll"))
-            {
-                var assembly = Assembly.LoadFrom(pluginDll);
-                
-                container.Configure(c =>
-                {
-                    foreach (var handlerType in assembly.GetTypes()
-                        .Where(t => typeof(IPacketHandler).IsAssignableFrom(t) && !t.IsAbstract))
-                    {
-                        c.Export(handlerType).As<IPacketHandler>();
-                    }
-                });
-                
-                Console.WriteLine($"Loaded plugin: {Path.GetFileName(pluginDll)}");
-            }
-        }
-
-        // Initialize all packet handlers
-        var router = container.Locate<PacketRouter>();
-        var handlers = container.Locate<IEnumerable<IPacketHandler>>();
-        foreach (var handler in handlers)
-        {
-            router.RegisterHandler(handler);
-        }
-
-        // Start server
-        var server = container.Locate<TCPServer>();
-        await server.StartAsync();
-    }
-}
-```
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
+MIT License - see [LICENSE](LICENSE) for details.

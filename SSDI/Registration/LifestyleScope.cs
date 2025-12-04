@@ -34,22 +34,25 @@ public enum LifestyleType
 /// </summary>
 /// <remarks>
 /// Access this through <see cref="FluentExportRegistration.Lifestyle"/>.
+/// This is a lightweight struct that delegates to the parent registration.
 /// </remarks>
-public class LifestyleScope
+public readonly struct LifestyleScope
 {
     private readonly FluentExportRegistration _registrationBlock;
-    private bool _set = false;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="LifestyleScope"/> class.
+    /// Initializes a new instance of the <see cref="LifestyleScope"/> struct.
     /// </summary>
     /// <param name="registrationBlock">The parent registration.</param>
-    public LifestyleScope(FluentExportRegistration registrationBlock) => _registrationBlock = registrationBlock;
+    public LifestyleScope(FluentExportRegistration registrationBlock)
+    {
+        _registrationBlock = registrationBlock;
+    }
 
     /// <summary>
-    /// Gets or sets the current lifestyle type. Default is <see cref="LifestyleType.Transient"/>.
+    /// Gets the current lifestyle type. Default is <see cref="LifestyleType.Transient"/>.
     /// </summary>
-    public LifestyleType Lifestyle { get; set; } = LifestyleType.Transient;
+    public LifestyleType Lifestyle => _registrationBlock.LifestyleValue;
 
     /// <summary>
     /// Configures the registration to use singleton lifetime.
@@ -69,11 +72,7 @@ public class LifestyleScope
     /// </example>
     public FluentExportRegistration Singleton()
     {
-        if (_set)
-            throw new InvalidOperationException("Lifestyle already set.");
-
-        _set = true;
-        Lifestyle = LifestyleType.Singleton;
+        _registrationBlock.SetLifestyle(LifestyleType.Singleton);
         return _registrationBlock;
     }
 
@@ -95,11 +94,7 @@ public class LifestyleScope
     /// </example>
     public FluentExportRegistration Transient()
     {
-        if (_set)
-            throw new InvalidOperationException("Lifestyle already set.");
-
-        _set = true;
-        Lifestyle = LifestyleType.Transient;
+        _registrationBlock.SetLifestyle(LifestyleType.Transient);
         return _registrationBlock;
     }
 
@@ -125,13 +120,7 @@ public class LifestyleScope
     /// </example>
     public FluentExportRegistration Scoped()
     {
-        if (_set)
-            throw new InvalidOperationException("Lifestyle already set.");
-
-        _set = true;
-        Lifestyle = LifestyleType.Scoped;
+        _registrationBlock.SetLifestyle(LifestyleType.Scoped);
         return _registrationBlock;
     }
-
-    internal void Set() => _set = true;
 }

@@ -1,8 +1,7 @@
-﻿using System.Buffers;
 using System.Collections;
 using System.Collections.Concurrent;
-using System.Collections.Immutable;
 using System.Linq.Expressions;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using SSDI.Events;
 using SSDI.Parameters;
@@ -12,112 +11,130 @@ namespace SSDI.Builder;
 
 /// <summary>
 /// Provides the core activation and resolution logic for the dependency injection container.
-/// Handles constructor caching, lifetime management, and parameter resolution.
 /// </summary>
-/// <remarks>
-/// <para>
-/// This class is the base class for <see cref="SSDI.DependencyInjectionContainer"/> and provides
-/// all the <c>Locate</c> methods for resolving dependencies.
-/// </para>
-/// <para>
-/// Performance optimizations include:
-/// <list type="bullet">
-///   <item><description>Lock-free reads using ImmutableHashSet for aliases</description></item>
-///   <item><description>ArrayPool for parameter arrays to reduce allocations</description></item>
-///   <item><description>Stack allocation for small consumed tracking arrays</description></item>
-///   <item><description>Struct-based parameters to avoid virtual dispatch</description></item>
-///   <item><description>Flattened constructor storage for faster iteration</description></item>
-/// </list>
-/// </para>
-/// </remarks>
 public class ActivationBuilder
 {
-    // Flattened constructor storage - CachedConstructor[] instead of List<CachedConstructor[]>
-    private readonly ConcurrentDictionary<Type, CachedConstructor[]> _constructors = new();
-    private readonly ConcurrentDictionary<Type, LifestyleType> _lifetimes = new();
-    private readonly ConcurrentDictionary<Type, object> _singletonInstances = new();
-    
-    // Lock-free alias storage using ImmutableHashSet
-    private readonly ConcurrentDictionary<Type, ImmutableHashSet<Type>> _alias = new();
-    
-    // List factory cache
-    private readonly ConcurrentDictionary<Type, Func<IList>> _listFactories = new();
-    
-    // Enumerable type cache - stores element type or null if not enumerable
-    private readonly ConcurrentDictionary<Type, Type?> _enumerableElementTypeCache = new();
+    // Registration metadata (lightweight - no compilation)
+    private readonly ConcurrentDictionary<Type, TypeRegistration> _registrations = new();
 
-    // Reusable empty arrays to avoid allocations
-    private static readonly DIParameter[] EmptyParameters = Array.Empty<DIParameter>();
-    private static readonly object?[] EmptyObjectArray = Array.Empty<object?>();
-    
-    // ArrayPool for parameter arrays
-    private static readonly ArrayPool<object?> ParamPool = ArrayPool<object?>.Shared;
+    // Alias to concrete type mapping (interface -> implementation)
+    private readonly ConcurrentDictionary<Type, List<Type>> _aliases = new();
+
+    // Pre-compiled factory cache for non-generic path
+    private readonly ConcurrentDictionary<Type, Func<Scope?, object>> _factoryCache = new();
+
+    // Generic factory cache - stores Func<T> for each type T (avoids boxing)
+    private readonly ConcurrentDictionary<Type, Delegate> _genericFactoryCache = new();
+
+    // Singleton instances
+    private readonly ConcurrentDictionary<Type, object> _singletonInstances = new();
+
+    // Enumerable factory cache
+    private readonly ConcurrentDictionary<Type, Func<Scope?, object>> _enumerableFactoryCache = new();
+
+    // Container ID for static resolver binding
+    private static int _nextContainerId;
+    internal readonly int ContainerId = Interlocked.Increment(ref _nextContainerId);
+
+    // Static resolver registry - maps container ID to container instance
+    private static readonly ConcurrentDictionary<int, ActivationBuilder> _containers = new();
 
     /// <summary>
     /// Occurs when a type is unregistered from the container.
     /// </summary>
-    /// <remarks>
-    /// This event fires after the type has been removed from the container and any singleton instance has been disposed.
-    /// </remarks>
-    /// <example>
-    /// <code>
-    /// container.Unregistered += (sender, args) =>
-    /// {
-    ///     Console.WriteLine($"Unregistered: {args.UnregisteredType.Name}");
-    ///     if (args.WasDisposed)
-    ///         Console.WriteLine("  Instance was disposed");
-    /// };
-    /// </code>
-    /// </example>
     public event EventHandler<UnregisteredEventArgs>? Unregistered;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ActivationBuilder"/> class.
+    /// </summary>
+    public ActivationBuilder()
+    {
+        _containers[ContainerId] = this;
+    }
 
     internal void Add(ExportRegistration reg)
     {
         foreach (var exportRegistration in reg.Registrations)
         {
             var exportedType = exportRegistration.ExportedType;
-            var lifestyle = exportRegistration.FluentExportRegistration.Lifestyle.Lifestyle;
-            
-            _lifetimes[exportedType] = lifestyle;
+            var fluentReg = exportRegistration.FluentExportRegistration;
+            var lifestyle = fluentReg.LifestyleValue;
 
-            foreach (var aliasType in exportRegistration.FluentExportRegistration.Alias)
-            {
-                // Lock-free update using ImmutableHashSet
-                _alias.AddOrUpdate(
-                    aliasType,
-                    _ => ImmutableHashSet.Create(exportedType),
-                    (_, existing) => existing.Add(exportedType));
-                
-                _lifetimes[aliasType] = lifestyle;
-            }
+            // Get parameters only if they exist (avoids List allocation)
+            var parameters = fluentReg.HasParameters ? fluentReg.ParametersInternal : EmptyParameters;
 
+            // For pre-built instances, store directly
             if (lifestyle == LifestyleType.Singleton && exportRegistration.Instance is not null)
             {
-                _singletonInstances[exportedType] = exportRegistration.Instance;
+                var instance = exportRegistration.Instance;
+                _singletonInstances[exportedType] = instance;
+                _factoryCache[exportedType] = _ => instance;
+
+                if (fluentReg.HasAlias)
+                {
+                    foreach (var aliasType in fluentReg.Alias)
+                    {
+                        AddAliasFast(aliasType, exportedType);
+                        _factoryCache[aliasType] = _ => instance;
+                    }
+                }
+
+                _registrations[exportedType] = new TypeRegistration(exportedType, lifestyle, parameters, instance);
                 continue;
             }
 
-            // Build constructor array - merge with existing if any
-            // Include both public and non-public constructors for flexibility
-            var ctorInfos = exportedType.GetConstructors(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-            var newCtors = new CachedConstructor[ctorInfos.Length];
-            
-            for (var i = 0; i < ctorInfos.Length; i++)
+            _registrations[exportedType] = new TypeRegistration(exportedType, lifestyle, parameters, null);
+
+            if (fluentReg.HasAlias)
             {
-                newCtors[i] = new CachedConstructor(ctorInfos[i], exportRegistration.FluentExportRegistration.ParametersInternal);
+                foreach (var aliasType in fluentReg.Alias)
+                {
+                    AddAliasFast(aliasType, exportedType);
+                    // Only invalidate cache if this is a re-registration (cache already exists)
+                    if (_factoryCache.ContainsKey(aliasType))
+                    {
+                        _factoryCache.TryRemove(aliasType, out _);
+                        _genericFactoryCache.TryRemove(aliasType, out _);
+                    }
+                }
             }
 
-            _constructors.AddOrUpdate(
-                exportedType,
-                newCtors,
-                (_, existing) =>
-                {
-                    // Merge existing constructors with new ones
-                    var merged = new CachedConstructor[existing.Length + newCtors.Length];
-                    existing.CopyTo(merged, 0);
-                    newCtors.CopyTo(merged, existing.Length);
-                    return merged;
-                });
+            // Only invalidate cache if this is a re-registration
+            if (_factoryCache.ContainsKey(exportedType))
+            {
+                _factoryCache.TryRemove(exportedType, out _);
+                _genericFactoryCache.TryRemove(exportedType, out _);
+            }
+        }
+    }
+
+    private static readonly List<DIParameter> EmptyParameters = new(0);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void AddAlias(Type aliasType, Type concreteType)
+    {
+        _aliases.AddOrUpdate(
+            aliasType,
+            _ => new List<Type>(2) { concreteType },
+            (_, list) => { lock (list) { if (!list.Contains(concreteType)) list.Add(concreteType); } return list; });
+    }
+
+    /// <summary>
+    /// Fast path for adding aliases during registration (single-threaded)
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void AddAliasFast(Type aliasType, Type concreteType)
+    {
+        if (_aliases.TryGetValue(aliasType, out var list))
+        {
+            // Common case: alias already exists
+            if (!list.Contains(concreteType))
+                list.Add(concreteType);
+        }
+        else
+        {
+            // New alias - use small initial capacity
+            _aliases[aliasType] = new List<Type>(2) { concreteType };
         }
     }
 
@@ -125,51 +142,24 @@ public class ActivationBuilder
     /// Unregisters a type from the container.
     /// </summary>
     /// <typeparam name="T">The type to unregister.</typeparam>
-    /// <param name="removeFromAliases">If true, also removes this type from any alias (interface) registrations it belongs to.</param>
+    /// <param name="removeFromAliases">If true, also removes this type from any alias registrations.</param>
     /// <returns>True if the type was found and removed; otherwise, false.</returns>
-    /// <remarks>
-    /// If the type was registered as a singleton and has already been instantiated, the cached instance will be removed.
-    /// If the instance implements <see cref="IDisposable"/>, it will be disposed.
-    /// </remarks>
-    /// <example>
-    /// <code>
-    /// container.Configure(c => c.Export&lt;OldService&gt;().As&lt;IService&gt;());
-    /// 
-    /// // Later, unregister OldService and remove it from IService alias
-    /// container.Unregister&lt;OldService&gt;(removeFromAliases: true);
-    /// 
-    /// // Register a new implementation
-    /// container.Configure(c => c.Export&lt;NewService&gt;().As&lt;IService&gt;());
-    /// </code>
-    /// </example>
     public bool Unregister<T>(bool removeFromAliases = true) => Unregister(typeof(T), removeFromAliases);
 
     /// <summary>
     /// Unregisters a type from the container.
     /// </summary>
     /// <param name="type">The type to unregister.</param>
-    /// <param name="removeFromAliases">If true, also removes this type from any alias (interface) registrations it belongs to.</param>
+    /// <param name="removeFromAliases">If true, also removes this type from any alias registrations.</param>
     /// <returns>True if the type was found and removed; otherwise, false.</returns>
-    /// <remarks>
-    /// If the type was registered as a singleton and has already been instantiated, the cached instance will be removed.
-    /// If the instance implements <see cref="IDisposable"/>, it will be disposed.
-    /// </remarks>
     public bool Unregister(Type type, bool removeFromAliases = true)
     {
         var removed = false;
         object? removedInstance = null;
         var wasDisposed = false;
 
-        // Remove constructors
-        if (_constructors.TryRemove(type, out _))
-        {
-            removed = true;
-        }
+        if (_registrations.TryRemove(type, out _)) removed = true;
 
-        // Remove lifetime registration
-        _lifetimes.TryRemove(type, out _);
-
-        // Remove singleton instance and dispose if applicable
         if (_singletonInstances.TryRemove(type, out var instance))
         {
             removedInstance = instance;
@@ -188,22 +178,25 @@ public class ActivationBuilder
             removed = true;
         }
 
-        // Remove from all alias sets
+        _factoryCache.TryRemove(type, out _);
+        _genericFactoryCache.TryRemove(type, out _);
+
         if (removeFromAliases)
         {
-            foreach (var kvp in _alias)
+            foreach (var kvp in _aliases)
             {
-                if (kvp.Value.Contains(type))
+                lock (kvp.Value)
                 {
-                    _alias.AddOrUpdate(
-                        kvp.Key,
-                        _ => ImmutableHashSet<Type>.Empty,
-                        (_, existing) => existing.Remove(type));
+                    if (kvp.Value.Remove(type))
+                    {
+                        _factoryCache.TryRemove(kvp.Key, out _);
+                        _genericFactoryCache.TryRemove(kvp.Key, out _);
+                        _enumerableFactoryCache.TryRemove(typeof(IEnumerable<>).MakeGenericType(kvp.Key), out _);
+                    }
                 }
             }
         }
 
-        // Fire event if something was removed
         if (removed)
         {
             Unregistered?.Invoke(this, new UnregisteredEventArgs(type, removedInstance, wasDisposed));
@@ -213,56 +206,33 @@ public class ActivationBuilder
     }
 
     /// <summary>
-    /// Unregisters all implementations registered under an alias (interface) type.
+    /// Unregisters all implementations registered under an alias type.
     /// </summary>
-    /// <typeparam name="TAlias">The alias type (typically an interface) to unregister all implementations for.</typeparam>
+    /// <typeparam name="TAlias">The alias type to unregister all implementations for.</typeparam>
     /// <returns>The number of implementations that were unregistered.</returns>
-    /// <remarks>
-    /// This method removes all concrete types that were registered with <c>.As&lt;TAlias&gt;()</c>.
-    /// Each implementation's singleton instance (if any) will be disposed if it implements <see cref="IDisposable"/>.
-    /// </remarks>
-    /// <example>
-    /// <code>
-    /// container.Configure(c =>
-    /// {
-    ///     c.Export&lt;AuthHandler&gt;().As&lt;IPacketHandler&gt;();
-    ///     c.Export&lt;GameHandler&gt;().As&lt;IPacketHandler&gt;();
-    ///     c.Export&lt;ChatHandler&gt;().As&lt;IPacketHandler&gt;();
-    /// });
-    /// 
-    /// // Unregister all packet handlers
-    /// int count = container.UnregisterAll&lt;IPacketHandler&gt;(); // Returns 3
-    /// </code>
-    /// </example>
     public int UnregisterAll<TAlias>() => UnregisterAll(typeof(TAlias));
 
     /// <summary>
-    /// Unregisters all implementations registered under an alias (interface) type.
+    /// Unregisters all implementations registered under an alias type.
     /// </summary>
-    /// <param name="aliasType">The alias type (typically an interface) to unregister all implementations for.</param>
+    /// <param name="aliasType">The alias type to unregister all implementations for.</param>
     /// <returns>The number of implementations that were unregistered.</returns>
-    /// <remarks>
-    /// This method removes all concrete types that were registered with <c>.As(aliasType)</c>.
-    /// Each implementation's singleton instance (if any) will be disposed if it implements <see cref="IDisposable"/>.
-    /// </remarks>
     public int UnregisterAll(Type aliasType)
     {
-        if (!_alias.TryRemove(aliasType, out var implementations))
-        {
-            return 0;
-        }
+        if (!_aliases.TryRemove(aliasType, out var implementations)) return 0;
 
         var count = 0;
-        foreach (var implType in implementations)
+        List<Type> implCopy;
+        lock (implementations) { implCopy = new List<Type>(implementations); }
+
+        foreach (var implType in implCopy)
         {
-            if (Unregister(implType, removeFromAliases: false))
-            {
-                count++;
-            }
+            if (Unregister(implType, removeFromAliases: false)) count++;
         }
 
-        // Also remove the alias lifetime
-        _lifetimes.TryRemove(aliasType, out _);
+        _factoryCache.TryRemove(aliasType, out _);
+        _genericFactoryCache.TryRemove(aliasType, out _);
+        _enumerableFactoryCache.TryRemove(typeof(IEnumerable<>).MakeGenericType(aliasType), out _);
 
         return count;
     }
@@ -272,14 +242,6 @@ public class ActivationBuilder
     /// </summary>
     /// <typeparam name="T">The type to check.</typeparam>
     /// <returns>True if the type is registered; otherwise, false.</returns>
-    /// <example>
-    /// <code>
-    /// if (container.IsRegistered&lt;ILogger&gt;())
-    /// {
-    ///     var logger = container.Locate&lt;ILogger&gt;();
-    /// }
-    /// </code>
-    /// </example>
     public bool IsRegistered<T>() => IsRegistered(typeof(T));
 
     /// <summary>
@@ -287,106 +249,307 @@ public class ActivationBuilder
     /// </summary>
     /// <param name="type">The type to check.</param>
     /// <returns>True if the type is registered; otherwise, false.</returns>
-    public bool IsRegistered(Type type) => 
-        _constructors.ContainsKey(type) || 
-        _alias.ContainsKey(type) || 
+    public bool IsRegistered(Type type) =>
+        _registrations.ContainsKey(type) ||
+        _aliases.ContainsKey(type) ||
         _singletonInstances.ContainsKey(type);
 
     /// <summary>
-    /// Locates and returns an instance of the specified type.
+    /// Ultra-fast generic locate - uses cached Func&lt;T&gt; to avoid boxing
     /// </summary>
-    /// <typeparam name="T">The type to resolve.</typeparam>
-    /// <returns>An instance of <typeparamref name="T"/>.</returns>
-    /// <example>
-    /// <code>
-    /// var server = container.Locate&lt;TCPServer&gt;();
-    /// </code>
-    /// </example>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public T Locate<T>() => (T)Locate(typeof(T), EmptyParameters);
+    public T Locate<T>()
+    {
+        // Fast path: check generic factory cache (no boxing!)
+        if (_genericFactoryCache.TryGetValue(typeof(T), out var cached))
+        {
+            return ((Func<T>)cached)();
+        }
+
+        return LocateAndCacheGeneric<T>();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private T LocateAndCacheGeneric<T>()
+    {
+        // Build and cache a Func<T> for this type
+        var factory = BuildGenericFactory<T>();
+        _genericFactoryCache.TryAdd(typeof(T), factory);
+        return factory();
+    }
+
+    private Func<T> BuildGenericFactory<T>()
+    {
+        var type = typeof(T);
+
+        // Check for IEnumerable<T> - must handle before alias check
+        if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(IEnumerable<>))
+        {
+            return BuildEnumerableFactory<T>(type);
+        }
+
+        // Check for alias first
+        Type? concreteType = null;
+        if (_aliases.TryGetValue(type, out var implementations))
+        {
+            lock (implementations)
+            {
+                if (implementations.Count > 0)
+                    concreteType = implementations[0];
+            }
+        }
+
+        var resolveType = concreteType ?? type;
+
+        // Check for pre-built singleton
+        if (_singletonInstances.TryGetValue(resolveType, out var singleton))
+        {
+            var s = (T)singleton;
+            return () => s;
+        }
+
+        if (!_registrations.TryGetValue(resolveType, out var registration))
+        {
+            // Fallback: try parameterless constructor
+            return BuildFallbackFactory<T>(resolveType);
+        }
+
+        if (registration.Instance != null)
+        {
+            var inst = (T)registration.Instance;
+            return () => inst;
+        }
+
+        var lifestyle = registration.Lifestyle;
+
+        // Compile the factory
+        var factoryExpr = BuildTypedFactoryExpression<T>(resolveType, registration);
+        var compiled = factoryExpr.Compile();
+
+        return lifestyle switch
+        {
+            LifestyleType.Singleton => CreateSingletonFactory<T>(resolveType, compiled),
+            LifestyleType.Scoped => throw new InvalidOperationException(
+                $"Cannot resolve scoped service '{type.FullName}' from the root container. " +
+                "Use container.CreateScope() and resolve from the scope instead."),
+            _ => compiled // Transient - direct factory call
+        };
+    }
+
+    private Func<T> CreateSingletonFactory<T>(Type type, Func<T> innerFactory)
+    {
+        T? instance = default;
+        var syncRoot = new object();
+        var created = false;
+
+        return () =>
+        {
+            if (created) return instance!;
+
+            lock (syncRoot)
+            {
+                if (created) return instance!;
+                instance = innerFactory();
+                _singletonInstances.TryAdd(type, instance!);
+                created = true;
+                return instance;
+            }
+        };
+    }
+
+    private Expression<Func<T>> BuildTypedFactoryExpression<T>(Type type, TypeRegistration registration)
+    {
+        var constructors = type.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+        ConstructorInfo? bestCtor = null;
+        int bestScore = -1;
+
+        foreach (var ctor in constructors)
+        {
+            var score = ScoreConstructor(ctor, registration.Parameters);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestCtor = ctor;
+            }
+        }
+
+        if (bestCtor == null)
+            throw new InvalidOperationException($"No suitable constructor found for type {type.FullName}");
+
+        var parameters = bestCtor.GetParameters();
+        var arguments = new Expression[parameters.Length];
+
+        for (var i = 0; i < parameters.Length; i++)
+        {
+            var param = parameters[i];
+            arguments[i] = BuildParameterExpressionTyped(param, i, registration.Parameters);
+        }
+
+        var newExpr = Expression.New(bestCtor, arguments);
+
+        // If T is the same as the type, return directly; otherwise cast
+        Expression body = typeof(T) == type
+            ? newExpr
+            : Expression.Convert(newExpr, typeof(T));
+
+        return Expression.Lambda<Func<T>>(body);
+    }
+
+    private Expression BuildParameterExpressionTyped(ParameterInfo param, int position, List<DIParameter> registeredParams)
+    {
+        // Check registered parameters first
+        foreach (var rp in registeredParams)
+        {
+            if (rp.Matches(param.Name ?? "", position, param.ParameterType))
+            {
+                return Expression.Constant(rp.Value, param.ParameterType);
+            }
+        }
+
+        // Try to resolve from container
+        if (_registrations.ContainsKey(param.ParameterType) || _aliases.ContainsKey(param.ParameterType))
+        {
+            return BuildInlineResolutionTyped(param.ParameterType);
+        }
+
+        // Check for optional parameter
+        if (param.IsOptional)
+        {
+            return Expression.Constant(param.DefaultValue, param.ParameterType);
+        }
+
+        throw new InvalidOperationException($"Cannot resolve parameter '{param.Name}' of type {param.ParameterType.FullName}");
+    }
+
+    private Expression BuildInlineResolutionTyped(Type type)
+    {
+        // Generate inline call: this.ResolveInlineTyped<T>()
+        var method = typeof(ActivationBuilder)
+            .GetMethod(nameof(ResolveInlineTyped), BindingFlags.NonPublic | BindingFlags.Instance)!
+            .MakeGenericMethod(type);
+
+        return Expression.Call(Expression.Constant(this), method);
+    }
+
+    private T ResolveInlineTyped<T>()
+    {
+        if (_genericFactoryCache.TryGetValue(typeof(T), out var cached))
+        {
+            return ((Func<T>)cached)();
+        }
+        return LocateAndCacheGeneric<T>();
+    }
+
+    private Func<T> BuildFallbackFactory<T>(Type type)
+    {
+        var ctor = type.GetConstructor(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, Type.EmptyTypes, null);
+
+        if (ctor != null)
+        {
+            var newExpr = Expression.New(ctor);
+            Expression body = typeof(T) == type
+                ? newExpr
+                : Expression.Convert(newExpr, typeof(T));
+            var lambda = Expression.Lambda<Func<T>>(body);
+            return lambda.Compile();
+        }
+
+        return () => (T)Activator.CreateInstance(type)!;
+    }
+
+    private Func<T> BuildEnumerableFactory<T>(Type enumerableType)
+    {
+        var elementType = enumerableType.GetGenericArguments()[0];
+        var listType = typeof(List<>).MakeGenericType(elementType);
+
+        if (_aliases.TryGetValue(elementType, out var implementations))
+        {
+            List<Type> implCopy;
+            lock (implementations) { implCopy = new List<Type>(implementations); }
+
+            if (implCopy.Count == 0)
+            {
+                // No implementations registered - return empty list
+                return () => (T)Activator.CreateInstance(listType)!;
+            }
+
+            var factories = implCopy.Select(t => GetOrCreateFactory(t)).ToList();
+            return () =>
+            {
+                var list = (IList)Activator.CreateInstance(listType)!;
+                foreach (var factory in factories)
+                {
+                    list.Add(factory(null));
+                }
+                return (T)list;
+            };
+        }
+
+        if (_registrations.ContainsKey(elementType))
+        {
+            var factory = GetOrCreateFactory(elementType);
+            return () =>
+            {
+                var list = (IList)Activator.CreateInstance(listType)!;
+                list.Add(factory(null));
+                return (T)list;
+            };
+        }
+
+        // No registrations - return empty list
+        return () => (T)Activator.CreateInstance(listType)!;
+    }
+
+    // ==================== Non-generic path (for runtime Type resolution) ====================
 
     /// <summary>
     /// Locates and returns an instance of the specified type.
     /// </summary>
     /// <param name="type">The type to resolve.</param>
     /// <returns>An instance of the specified type.</returns>
-    /// <example>
-    /// <code>
-    /// var server = container.Locate(typeof(TCPServer));
-    /// </code>
-    /// </example>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public object Locate(Type type) => Locate(type, EmptyParameters);
+    public object Locate(Type type) => Locate(type, Array.Empty<DIParameter>());
 
     /// <summary>
     /// Locates and returns an instance with positional constructor parameters.
-    /// Parameters are matched by their position in the constructor (0-based).
     /// </summary>
     /// <typeparam name="T">The type to resolve.</typeparam>
-    /// <param name="parameters">The positional parameter values, starting at position 0.</param>
+    /// <param name="parameters">The positional parameter values.</param>
     /// <returns>An instance of <typeparamref name="T"/>.</returns>
-    /// <example>
-    /// <code>
-    /// // For a constructor: TCPServer(string address, int port)
-    /// var server = container.LocateWithPositionalParams&lt;TCPServer&gt;("127.0.0.1", 8080);
-    /// </code>
-    /// </example>
     public T LocateWithPositionalParams<T>(params object[] parameters)
     {
         var diParams = new DIParameter[parameters.Length];
         for (var i = 0; i < parameters.Length; i++)
-        {
             diParams[i] = DIParameter.Positional(i, parameters[i]);
-        }
         return (T)Locate(typeof(T), diParams);
     }
 
     /// <summary>
     /// Locates and returns an instance with named constructor parameters.
-    /// Parameters are matched by their name in the constructor.
     /// </summary>
     /// <typeparam name="T">The type to resolve.</typeparam>
     /// <param name="parameters">Tuples of parameter names and values.</param>
     /// <returns>An instance of <typeparamref name="T"/>.</returns>
-    /// <example>
-    /// <code>
-    /// // For a constructor: TCPServer(string address, int port)
-    /// var server = container.LocateWithNamedParameters&lt;TCPServer&gt;(
-    ///     ("address", "127.0.0.1"), 
-    ///     ("port", 8080)
-    /// );
-    /// </code>
-    /// </example>
     public T LocateWithNamedParameters<T>(params (string name, object value)[] parameters)
     {
         var diParams = new DIParameter[parameters.Length];
         for (var i = 0; i < parameters.Length; i++)
-        {
             diParams[i] = DIParameter.Named(parameters[i].name, parameters[i].value);
-        }
         return (T)Locate(typeof(T), diParams);
     }
 
     /// <summary>
     /// Locates and returns an instance with typed constructor parameters.
-    /// Parameters are matched by their type.
     /// </summary>
     /// <typeparam name="T">The type to resolve.</typeparam>
     /// <param name="parameters">The parameter values to match by type.</param>
     /// <returns>An instance of <typeparamref name="T"/>.</returns>
-    /// <example>
-    /// <code>
-    /// // For a constructor: TCPServer(string address, int port)
-    /// var server = container.LocateWithTypedParams&lt;TCPServer&gt;("127.0.0.1", 8080);
-    /// </code>
-    /// </example>
     public T LocateWithTypedParams<T>(params object[] parameters)
     {
         var diParams = new DIParameter[parameters.Length];
         for (var i = 0; i < parameters.Length; i++)
-        {
             diParams[i] = DIParameter.Typed(parameters[i]);
-        }
         return (T)Locate(typeof(T), diParams);
     }
 
@@ -394,23 +557,13 @@ public class ActivationBuilder
     /// Locates and returns an instance with custom DI parameters.
     /// </summary>
     /// <typeparam name="T">The type to resolve.</typeparam>
-    /// <param name="parameters">Custom <see cref="IDIParameter"/> instances for parameter matching.</param>
+    /// <param name="parameters">Custom <see cref="IDIParameter"/> instances.</param>
     /// <returns>An instance of <typeparamref name="T"/>.</returns>
-    /// <example>
-    /// <code>
-    /// var server = container.Locate&lt;TCPServer&gt;(
-    ///     new NamedParameter("address", "127.0.0.1"),
-    ///     new PositionalParameter(1, 8080)
-    /// );
-    /// </code>
-    /// </example>
     public T Locate<T>(params IDIParameter[] parameters)
     {
         var diParams = new DIParameter[parameters.Length];
         for (var i = 0; i < parameters.Length; i++)
-        {
             diParams[i] = DIParameter.FromLegacy(parameters[i]);
-        }
         return (T)Locate(typeof(T), diParams);
     }
 
@@ -418,84 +571,58 @@ public class ActivationBuilder
     /// Locates and returns an instance with a single positional parameter.
     /// </summary>
     /// <typeparam name="T">The type to resolve.</typeparam>
-    /// <param name="position">The zero-based position of the parameter in the constructor.</param>
+    /// <param name="position">The zero-based position of the parameter.</param>
     /// <param name="value">The value for the parameter.</param>
     /// <returns>An instance of <typeparamref name="T"/>.</returns>
-    /// <example>
-    /// <code>
-    /// // For a constructor: TCPServer(string address, int port)
-    /// var server = container.Locate&lt;TCPServer&gt;(0, "127.0.0.1");
-    /// </code>
-    /// </example>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public T Locate<T>(int position, object value)
     {
-        var diParams = new DIParameter[1];
-        diParams[0] = DIParameter.Positional(position, value);
-        return (T)Locate(typeof(T), diParams);
+        return (T)Locate(typeof(T), new[] { DIParameter.Positional(position, value) });
     }
 
     /// <summary>
     /// Locates and returns an instance with custom DI parameters.
     /// </summary>
     /// <typeparam name="T">The type to resolve.</typeparam>
-    /// <param name="parameters">Custom <see cref="IDIParameter"/> instances for parameter matching.</param>
+    /// <param name="parameters">Custom <see cref="IDIParameter"/> instances.</param>
     /// <returns>An instance of <typeparamref name="T"/>.</returns>
-    /// <example>
-    /// <code>
-    /// var server = container.LocateWithParams&lt;TCPServer&gt;(
-    ///     new TypedParameter("127.0.0.1"),
-    ///     new TypedParameter(8080)
-    /// );
-    /// </code>
-    /// </example>
     public T LocateWithParams<T>(params IDIParameter[] parameters)
     {
         var diParams = new DIParameter[parameters.Length];
         for (var i = 0; i < parameters.Length; i++)
-        {
             diParams[i] = DIParameter.FromLegacy(parameters[i]);
-        }
         return (T)Locate(typeof(T), diParams);
     }
 
     /// <summary>
-    /// High-performance locate with struct-based parameters.
+    /// Locates and returns an instance with struct-based parameters.
     /// </summary>
     /// <typeparam name="T">The type to resolve.</typeparam>
     /// <param name="parameters">Struct-based parameters for optimal performance.</param>
     /// <returns>An instance of <typeparamref name="T"/>.</returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public T Locate<T>(params DIParameter[] parameters) => (T)Locate(typeof(T), parameters);
+    public T Locate<T>(params DIParameter[] parameters)
+    {
+        if (parameters.Length == 0) return Locate<T>();
+        return (T)Locate(typeof(T), parameters);
+    }
 
     /// <summary>
     /// Locates and returns an instance of the specified type with custom DI parameters.
-    /// Also supports resolving <see cref="IEnumerable{T}"/> to get all registered implementations of an interface.
     /// </summary>
     /// <param name="type">The type to resolve.</param>
-    /// <param name="parameters">Custom <see cref="IDIParameter"/> instances for parameter matching.</param>
-    /// <returns>An instance of the specified type, or an enumerable of instances if <paramref name="type"/> is <see cref="IEnumerable{T}"/>.</returns>
-    /// <example>
-    /// <code>
-    /// // Locate a single instance
-    /// var server = container.Locate(typeof(TCPServer), new NamedParameter("port", 8080));
-    /// 
-    /// // Locate all implementations of an interface
-    /// var routes = container.Locate(typeof(IEnumerable&lt;IPacketRouter&gt;));
-    /// </code>
-    /// </example>
+    /// <param name="parameters">Custom <see cref="IDIParameter"/> instances.</param>
+    /// <returns>An instance of the specified type.</returns>
     public object Locate(Type type, params IDIParameter[] parameters)
     {
         var diParams = new DIParameter[parameters.Length];
         for (var i = 0; i < parameters.Length; i++)
-        {
             diParams[i] = DIParameter.FromLegacy(parameters[i]);
-        }
         return Locate(type, diParams);
     }
 
     /// <summary>
-    /// High-performance locate with struct-based parameters.
+    /// Locates and returns an instance of the specified type with struct-based parameters.
     /// </summary>
     /// <param name="type">The type to resolve.</param>
     /// <param name="parameters">Struct-based parameters.</param>
@@ -505,304 +632,495 @@ public class ActivationBuilder
         return LocateWithScope(type, null, parameters);
     }
 
-    /// <summary>
-    /// Internal method to locate a type with scope support.
-    /// </summary>
     internal object LocateWithScope(Type type, Scope? scope, DIParameter[] parameters)
     {
-        var elementType = GetEnumerableElementType(type);
-        var isEnumerable = elementType is not null;
-        var resolveType = isEnumerable ? elementType! : type;
-
-        if (_alias.TryGetValue(resolveType, out var aliasSet))
+        // Check for IEnumerable<T>
+        if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(IEnumerable<>))
         {
-            if (isEnumerable)
-            {
-                var list = CreateListOfTType(resolveType);
+            return ResolveEnumerable(type, scope, parameters);
+        }
 
-                // ImmutableHashSet - no lock needed for iteration
-                foreach (var aliasedType in aliasSet)
+        // Fast path for no runtime parameters
+        if (parameters.Length == 0)
+        {
+            if (_factoryCache.TryGetValue(type, out var factory))
+            {
+                return factory(scope);
+            }
+            return LocateInternal(type, scope);
+        }
+
+        // Slow path with runtime parameters
+        return LocateWithRuntimeParams(type, scope, parameters);
+    }
+
+    private object LocateInternal(Type type, Scope? scope)
+    {
+        // Check for alias first
+        if (_aliases.TryGetValue(type, out var implementations))
+        {
+            Type? concreteType = null;
+            lock (implementations)
+            {
+                if (implementations.Count > 0)
+                    concreteType = implementations[0];
+            }
+
+            if (concreteType != null)
+            {
+                var factory = GetOrCreateFactory(concreteType);
+                _factoryCache.TryAdd(type, factory);
+                return factory(scope);
+            }
+        }
+
+        var directFactory = GetOrCreateFactory(type);
+        return directFactory(scope);
+    }
+
+    private Func<Scope?, object> GetOrCreateFactory(Type type)
+    {
+        return _factoryCache.GetOrAdd(type, t => CompileFactory(t));
+    }
+
+    private Func<Scope?, object> CompileFactory(Type type)
+    {
+        if (_singletonInstances.TryGetValue(type, out var existingInstance))
+        {
+            return _ => existingInstance;
+        }
+
+        if (!_registrations.TryGetValue(type, out var registration))
+        {
+            return CompileFallbackFactory(type);
+        }
+
+        if (registration.Instance != null)
+        {
+            var instance = registration.Instance;
+            return _ => instance;
+        }
+
+        var lifestyle = registration.Lifestyle;
+        var factoryExpr = BuildFactoryExpression(type, registration);
+        var compiledFactory = factoryExpr.Compile();
+
+        return lifestyle switch
+        {
+            LifestyleType.Singleton => CreateSingletonFactoryNonGeneric(type, compiledFactory),
+            LifestyleType.Scoped => CreateScopedFactory(type, compiledFactory),
+            _ => compiledFactory
+        };
+    }
+
+    private Func<Scope?, object> CreateSingletonFactoryNonGeneric(Type type, Func<Scope?, object> innerFactory)
+    {
+        object? instance = null;
+        var syncRoot = new object();
+
+        return scope =>
+        {
+            if (instance != null) return instance;
+
+            lock (syncRoot)
+            {
+                if (instance != null) return instance;
+                instance = innerFactory(scope);
+                _singletonInstances.TryAdd(type, instance);
+                return instance;
+            }
+        };
+    }
+
+    private Func<Scope?, object> CreateScopedFactory(Type type, Func<Scope?, object> innerFactory)
+    {
+        return scope =>
+        {
+            if (scope == null)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot resolve scoped service '{type.FullName}' from the root container. " +
+                    "Use container.CreateScope() and resolve from the scope instead.");
+            }
+
+            return scope.GetOrAddScoped(type, () => innerFactory(scope));
+        };
+    }
+
+    private Expression<Func<Scope?, object>> BuildFactoryExpression(Type type, TypeRegistration registration)
+    {
+        var scopeParam = Expression.Parameter(typeof(Scope), "scope");
+        var constructors = type.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+        ConstructorInfo? bestCtor = null;
+        int bestScore = -1;
+
+        foreach (var ctor in constructors)
+        {
+            var score = ScoreConstructor(ctor, registration.Parameters);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestCtor = ctor;
+            }
+        }
+
+        if (bestCtor == null)
+            throw new InvalidOperationException($"No suitable constructor found for type {type.FullName}");
+
+        var parameters = bestCtor.GetParameters();
+        var arguments = new Expression[parameters.Length];
+
+        for (var i = 0; i < parameters.Length; i++)
+        {
+            var param = parameters[i];
+            arguments[i] = BuildParameterExpression(param, i, registration.Parameters, scopeParam);
+        }
+
+        var newExpr = Expression.New(bestCtor, arguments);
+        var convertExpr = Expression.Convert(newExpr, typeof(object));
+
+        return Expression.Lambda<Func<Scope?, object>>(convertExpr, scopeParam);
+    }
+
+    private int ScoreConstructor(ConstructorInfo ctor, List<DIParameter> registeredParams)
+    {
+        var parameters = ctor.GetParameters();
+        var score = 0;
+
+        foreach (var param in parameters)
+        {
+            var canSatisfy = false;
+
+            foreach (var rp in registeredParams)
+            {
+                if (rp.Matches(param.Name ?? "", param.Position, param.ParameterType))
                 {
-                    if (LocateInternal(aliasedType, true, parameters, scope) is IList listOfObj)
+                    canSatisfy = true;
+                    score += 10;
+                    break;
+                }
+            }
+
+            if (!canSatisfy)
+            {
+                if (_registrations.ContainsKey(param.ParameterType) || _aliases.ContainsKey(param.ParameterType))
+                {
+                    canSatisfy = true;
+                    score += 5;
+                }
+                else if (param.IsOptional)
+                {
+                    canSatisfy = true;
+                    score += 1;
+                }
+            }
+
+            if (!canSatisfy) return -1;
+        }
+
+        return score;
+    }
+
+    private Expression BuildParameterExpression(ParameterInfo param, int position, List<DIParameter> registeredParams, ParameterExpression scopeParam)
+    {
+        foreach (var rp in registeredParams)
+        {
+            if (rp.Matches(param.Name ?? "", position, param.ParameterType))
+            {
+                return Expression.Constant(rp.Value, param.ParameterType);
+            }
+        }
+
+        if (_registrations.ContainsKey(param.ParameterType) || _aliases.ContainsKey(param.ParameterType))
+        {
+            return BuildInlineResolutionExpression(param.ParameterType, scopeParam);
+        }
+
+        if (param.IsOptional)
+        {
+            return Expression.Constant(param.DefaultValue, param.ParameterType);
+        }
+
+        throw new InvalidOperationException($"Cannot resolve parameter '{param.Name}' of type {param.ParameterType.FullName}");
+    }
+
+    private Expression BuildInlineResolutionExpression(Type type, ParameterExpression scopeParam)
+    {
+        var resolveMethod = typeof(ActivationBuilder).GetMethod(nameof(ResolveInline), BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var thisExpr = Expression.Constant(this);
+        var typeExpr = Expression.Constant(type);
+
+        var callExpr = Expression.Call(thisExpr, resolveMethod, typeExpr, scopeParam);
+        return Expression.Convert(callExpr, type);
+    }
+
+    private object ResolveInline(Type type, Scope? scope)
+    {
+        if (_factoryCache.TryGetValue(type, out var factory))
+        {
+            return factory(scope);
+        }
+        return LocateInternal(type, scope);
+    }
+
+    private Func<Scope?, object> CompileFallbackFactory(Type type)
+    {
+        var ctor = type.GetConstructor(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, Type.EmptyTypes, null);
+
+        if (ctor != null)
+        {
+            var newExpr = Expression.New(ctor);
+            var lambda = Expression.Lambda<Func<object>>(Expression.Convert(newExpr, typeof(object)));
+            var compiled = lambda.Compile();
+            return _ => compiled();
+        }
+
+        return _ => Activator.CreateInstance(type)!;
+    }
+
+    private object ResolveEnumerable(Type enumerableType, Scope? scope, DIParameter[] parameters)
+    {
+        var elementType = enumerableType.GetGenericArguments()[0];
+
+        if (parameters.Length == 0 && _enumerableFactoryCache.TryGetValue(enumerableType, out var cachedFactory))
+        {
+            return cachedFactory(scope);
+        }
+
+        var listType = typeof(List<>).MakeGenericType(elementType);
+        var list = (IList)Activator.CreateInstance(listType)!;
+
+        if (_aliases.TryGetValue(elementType, out var implementations))
+        {
+            List<Type> implCopy;
+            lock (implementations) { implCopy = new List<Type>(implementations); }
+
+            foreach (var implType in implCopy)
+            {
+                if (parameters.Length > 0)
+                {
+                    list.Add(LocateWithRuntimeParams(implType, scope, parameters));
+                }
+                else
+                {
+                    if (_factoryCache.TryGetValue(implType, out var factory))
                     {
-                        foreach (var o in listOfObj)
-                            list.Add(o);
+                        list.Add(factory(scope));
+                    }
+                    else
+                    {
+                        list.Add(LocateInternal(implType, scope));
                     }
                 }
-
-                return list;
+            }
+        }
+        else if (_registrations.ContainsKey(elementType))
+        {
+            if (parameters.Length > 0)
+            {
+                list.Add(LocateWithRuntimeParams(elementType, scope, parameters));
             }
             else
             {
-                // Return first matching alias
-                foreach (var aliasedType in aliasSet)
+                list.Add(LocateInternal(elementType, scope));
+            }
+        }
+
+        if (parameters.Length == 0 && list.Count > 0)
+        {
+            _enumerableFactoryCache.TryAdd(enumerableType, CompileEnumerableFactory(elementType));
+        }
+
+        return list;
+    }
+
+    private Func<Scope?, object> CompileEnumerableFactory(Type elementType)
+    {
+        var listType = typeof(List<>).MakeGenericType(elementType);
+
+        if (_aliases.TryGetValue(elementType, out var implementations))
+        {
+            List<Func<Scope?, object>> factories;
+            lock (implementations)
+            {
+                factories = implementations.Select(t => GetOrCreateFactory(t)).ToList();
+            }
+
+            return scope =>
+            {
+                var list = (IList)Activator.CreateInstance(listType)!;
+                foreach (var factory in factories)
                 {
-                    return LocateInternal(aliasedType, false, parameters, scope);
+                    list.Add(factory(scope));
                 }
-
-                throw new InvalidOperationException($"Could not find a concrete type for interface {type.FullName}");
-            }
+                return list;
+            };
         }
 
-        return LocateInternal(resolveType, isEnumerable, parameters, scope);
+        if (_registrations.ContainsKey(elementType))
+        {
+            var factory = GetOrCreateFactory(elementType);
+            return scope =>
+            {
+                var list = (IList)Activator.CreateInstance(listType)!;
+                list.Add(factory(scope));
+                return list;
+            };
+        }
+
+        return _ => Activator.CreateInstance(listType)!;
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private Type? GetEnumerableElementType(Type type)
+    private object LocateWithRuntimeParams(Type type, Scope? scope, DIParameter[] parameters)
     {
-        return _enumerableElementTypeCache.GetOrAdd(type, static t =>
-        {
-            if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(IEnumerable<>))
-            {
-                return t.GetGenericArguments()[0];
-            }
-            return null;
-        });
-    }
+        Type resolveType = type;
 
-    private object LocateInternal(Type type, bool isEnumerable, DIParameter[] parameters, Scope? scope = null)
-    {
-        // Fast path: check singleton cache first
-        if (_singletonInstances.TryGetValue(type, out var singletonInstance))
+        if (_aliases.TryGetValue(type, out var implementations))
         {
-            if (isEnumerable)
+            lock (implementations)
             {
-                var singletonList = CreateListOfTType(type);
-                singletonList.Add(singletonInstance);
-                return singletonList;
+                if (implementations.Count > 0)
+                    resolveType = implementations[0];
             }
-            return singletonInstance;
         }
 
-        // Fast path: check scoped cache if we have a scope
-        if (scope is not null && scope.TryGetScoped(type, out var scopedInstance) && scopedInstance is not null)
+        if (!_registrations.TryGetValue(resolveType, out var registration))
         {
-            if (isEnumerable)
-            {
-                var scopedList = CreateListOfTType(type);
-                scopedList.Add(scopedInstance);
-                return scopedList;
-            }
-            return scopedInstance;
+            return Activator.CreateInstance(resolveType)!;
         }
 
-        _lifetimes.TryGetValue(type, out var lifestyleType);
+        var lifestyle = registration.Lifestyle;
 
-        // Check for scoped without a scope
-        if (lifestyleType == LifestyleType.Scoped && scope is null)
+        if (lifestyle == LifestyleType.Scoped && scope == null)
         {
             throw new InvalidOperationException(
                 $"Cannot resolve scoped service '{type.FullName}' from the root container. " +
                 "Use container.CreateScope() and resolve from the scope instead.");
         }
 
-        if (_constructors.TryGetValue(type, out var constructors))
+        if (lifestyle == LifestyleType.Singleton && _singletonInstances.TryGetValue(resolveType, out var singleton))
         {
-            if (isEnumerable)
-            {
-                var list = CreateListOfTType(type);
+            return singleton;
+        }
 
-                foreach (var ctor in constructors)
+        if (lifestyle == LifestyleType.Scoped && scope != null && scope.TryGetScoped(resolveType, out var scoped) && scoped != null)
+        {
+            return scoped;
+        }
+
+        var constructors = resolveType.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+        foreach (var ctor in constructors)
+        {
+            if (TryCreateInstance(ctor, registration, parameters, scope, out var instance))
+            {
+                if (lifestyle == LifestyleType.Singleton)
                 {
-                    if (ctor.CanSatisfy(parameters.Length) && TryActivate(ctor, type, lifestyleType, parameters, scope, out var val))
-                    {
-                        list.Add(val);
-                    }
+                    _singletonInstances.TryAdd(resolveType, instance);
+                }
+                else if (lifestyle == LifestyleType.Scoped && scope != null)
+                {
+                    scope.GetOrAddScoped(resolveType, () => instance);
                 }
 
-                return list;
-            }
-            else
-            {
-                foreach (var ctor in constructors)
-                {
-                    if (ctor.CanSatisfy(parameters.Length) && TryActivate(ctor, type, lifestyleType, parameters, scope, out var val))
-                    {
-                        return val;
-                    }
-                }
+                return instance;
             }
         }
 
-        return isEnumerable ? CreateListOfTType(type) : Activator.CreateInstance(type)!;
+        throw new InvalidOperationException($"Could not create instance of type {resolveType.FullName}");
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private IList CreateListOfTType(Type type)
+    private bool TryCreateInstance(ConstructorInfo ctor, TypeRegistration registration, DIParameter[] runtimeParams, Scope? scope, out object instance)
     {
-        var factory = _listFactories.GetOrAdd(type, static t =>
+        var parameters = ctor.GetParameters();
+        var args = new object?[parameters.Length];
+        var registeredParams = registration.Parameters;
+
+        Span<bool> usedRegistered = stackalloc bool[registeredParams.Count];
+        Span<bool> usedRuntime = stackalloc bool[runtimeParams.Length];
+
+        for (var i = 0; i < parameters.Length; i++)
         {
-            var listType = typeof(List<>).MakeGenericType(t);
-            var ctor = listType.GetConstructor(Type.EmptyTypes)!;
-            var lambda = Expression.Lambda<Func<IList>>(Expression.New(ctor));
-            return lambda.Compile();
-        });
+            var param = parameters[i];
+            var found = false;
 
-        return factory();
-    }
-
-    private bool TryActivate(CachedConstructor c, Type type, LifestyleType lifestyleType, DIParameter[] runtimeParameters, Scope? scope, out object val)
-    {
-        var paramCount = c.ParameterCount;
-
-        // Fast path: parameterless constructor
-        if (paramCount == 0)
-        {
-            // For scoped services, use the scope's GetOrAddScoped
-            if (lifestyleType == LifestyleType.Scoped && scope is not null)
+            for (var j = 0; j < registeredParams.Count; j++)
             {
-                val = scope.GetOrAddScoped(type, () => c.ConstructorFunc(EmptyObjectArray));
-                return val is not null;
-            }
+                if (usedRegistered[j]) continue;
 
-            var noParamsInstance = c.ConstructorFunc(EmptyObjectArray);
-
-            if (noParamsInstance is null)
-            {
-                val = default!;
-                return false;
-            }
-
-            if (lifestyleType == LifestyleType.Singleton)
-            {
-                _singletonInstances.TryAdd(type, noParamsInstance);
-            }
-
-            val = noParamsInstance;
-            return true;
-        }
-
-        // Use ArrayPool for parameter array to reduce allocations
-        var parameters = ParamPool.Rent(paramCount);
-        
-        try
-        {
-            var registeredParams = c.ParameterValues;
-            var registeredCount = registeredParams.Length;
-            var runtimeCount = runtimeParameters.Length;
-
-            // Use stackalloc for consumed tracking when counts are small (typical case)
-            Span<bool> consumedRegistered = registeredCount <= 16 
-                ? stackalloc bool[registeredCount] 
-                : new bool[registeredCount];
-            
-            Span<bool> consumedRuntime = runtimeCount <= 16 
-                ? stackalloc bool[runtimeCount] 
-                : new bool[runtimeCount];
-
-            for (var i = 0; i < paramCount; i++)
-            {
-                var p = c.Parameters[i];
-                var paramName = p.Name ?? "";
-                var paramPosition = p.Position;
-                var paramType = p.ParameterType;
-                var foundParameter = false;
-
-                // Check registered parameters first (struct iteration - no virtual dispatch)
-                for (var j = 0; j < registeredCount; j++)
+                if (registeredParams[j].Matches(param.Name ?? "", param.Position, param.ParameterType))
                 {
-                    if (consumedRegistered[j])
-                        continue;
+                    args[i] = registeredParams[j].Value;
+                    usedRegistered[j] = true;
+                    found = true;
+                    break;
+                }
+            }
 
-                    ref readonly var parameterValue = ref registeredParams[j];
-                    if (parameterValue.Matches(paramName, paramPosition, paramType))
+            if (!found)
+            {
+                for (var j = 0; j < runtimeParams.Length; j++)
+                {
+                    if (usedRuntime[j]) continue;
+
+                    if (runtimeParams[j].Matches(param.Name ?? "", param.Position, param.ParameterType))
                     {
-                        parameters[i] = parameterValue.Value;
-                        foundParameter = true;
-                        consumedRegistered[j] = true;
+                        args[i] = runtimeParams[j].Value;
+                        usedRuntime[j] = true;
+                        found = true;
                         break;
                     }
                 }
+            }
 
-                if (!foundParameter)
+            if (!found)
+            {
+                if (_registrations.ContainsKey(param.ParameterType) || _aliases.ContainsKey(param.ParameterType))
                 {
-                    // Check runtime parameters (struct iteration - no virtual dispatch)
-                    for (var j = 0; j < runtimeCount; j++)
-                    {
-                        if (consumedRuntime[j])
-                            continue;
-
-                        ref readonly var parameterValue = ref runtimeParameters[j];
-                        if (parameterValue.Matches(paramName, paramPosition, paramType))
-                        {
-                            parameters[i] = parameterValue.Value;
-                            foundParameter = true;
-                            consumedRuntime[j] = true;
-                            break;
-                        }
-                    }
+                    args[i] = LocateWithScope(param.ParameterType, scope, Array.Empty<DIParameter>());
+                    found = true;
                 }
-
-                if (foundParameter)
-                    continue;
-
-                // Try to resolve from container (pass scope for scoped dependencies)
-                if (_constructors.ContainsKey(paramType) || _alias.ContainsKey(paramType))
+                else if (param.IsOptional)
                 {
-                    parameters[i] = LocateWithScope(paramType, scope, EmptyParameters);
-                    continue;
+                    args[i] = param.DefaultValue;
+                    found = true;
                 }
+            }
 
-                // Check for optional parameter
-                if (p.IsOptional)
-                {
-                    parameters[i] = p.DefaultValue;
-                    continue;
-                }
-
-                // Could not satisfy parameter
-                val = default!;
+            if (!found)
+            {
+                instance = null!;
                 return false;
             }
-
-            // For scoped services, use the scope's GetOrAddScoped
-            if (lifestyleType == LifestyleType.Scoped && scope is not null)
-            {
-                // Need to capture parameters for the factory
-                var capturedParams = new object?[paramCount];
-                Array.Copy(parameters, capturedParams, paramCount);
-
-                val = scope.GetOrAddScoped(type, () => c.ConstructorFunc(capturedParams));
-                return val is not null;
-            }
-
-            var instance = c.ConstructorFunc(parameters);
-
-            if (instance is null)
-            {
-                val = default!;
-                return false;
-            }
-
-            if (lifestyleType == LifestyleType.Singleton)
-            {
-                _singletonInstances.TryAdd(type, instance);
-            }
-
-            val = instance;
-            return true;
         }
-        finally
-        {
-            // Return to pool and clear to avoid holding references
-            ParamPool.Return(parameters, clearArray: true);
-        }
+
+        instance = ctor.Invoke(args);
+        return true;
     }
 
     /// <summary>
-    /// Creates a new scope for resolving scoped dependencies.
+    /// Creates a new scope for resolving scoped services.
     /// </summary>
     /// <returns>A new <see cref="IScope"/> instance.</returns>
-    /// <example>
-    /// <code>
-    /// // Per-player scope
-    /// var playerScope = container.CreateScope();
-    /// var inventory = playerScope.Locate&lt;IInventory&gt;();
-    /// var stats = playerScope.Locate&lt;IPlayerStats&gt;();
-    ///
-    /// // When player disconnects
-    /// playerScope.Dispose();
-    /// </code>
-    /// </example>
     public IScope CreateScope() => new Scope(this);
+}
+
+/// <summary>
+/// Lightweight registration metadata - no compilation during registration
+/// </summary>
+internal readonly struct TypeRegistration
+{
+    public readonly Type Type;
+    public readonly LifestyleType Lifestyle;
+    public readonly List<DIParameter> Parameters;
+    public readonly object? Instance;
+
+    public TypeRegistration(Type type, LifestyleType lifestyle, List<DIParameter> parameters, object? instance)
+    {
+        Type = type;
+        Lifestyle = lifestyle;
+        Parameters = parameters;
+        Instance = instance;
+    }
 }

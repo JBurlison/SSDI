@@ -11,7 +11,24 @@ namespace SSDI.Registration;
 public class FluentExportRegistration
 {
     internal InternalRegistration RegistrationBlock { get; }
-    internal HashSet<Type> Alias { get; }
+
+    // Lazy initialized - most registrations have 0-1 aliases
+    private List<Type>? _alias;
+    internal List<Type> Alias => _alias ??= new List<Type>(1);
+    internal bool HasAlias => _alias != null && _alias.Count > 0;
+
+    // Store lifestyle directly to avoid extra allocation
+    private LifestyleType _lifestyle = LifestyleType.Transient;
+    private bool _lifestyleSet;
+    internal LifestyleType LifestyleValue => _lifestyle;
+
+    internal void SetLifestyle(LifestyleType lifestyle)
+    {
+        if (_lifestyleSet)
+            throw new InvalidOperationException("Lifestyle already set.");
+        _lifestyleSet = true;
+        _lifestyle = lifestyle;
+    }
 
     /// <summary>
     /// Gets the lifestyle scope for configuring the registration's lifetime (Singleton or Transient).
@@ -25,19 +42,16 @@ public class FluentExportRegistration
     /// });
     /// </code>
     /// </example>
-    public LifestyleScope Lifestyle { get; }
+    public LifestyleScope Lifestyle => new LifestyleScope(this);
 
-    /// <summary>
-    /// Gets the list of constructor parameters configured for this registration.
-    /// Uses high-performance struct-based parameters internally.
-    /// </summary>
-    internal List<DIParameter> ParametersInternal { get; } = new();
+    // Lazy initialized - most registrations have no parameters
+    private List<DIParameter>? _parameters;
+    internal List<DIParameter> ParametersInternal => _parameters ??= new List<DIParameter>(2);
+    internal bool HasParameters => _parameters != null && _parameters.Count > 0;
 
     internal FluentExportRegistration(InternalRegistration registrationBlock)
     {
         RegistrationBlock = registrationBlock;
-        Lifestyle = new LifestyleScope(this);
-        Alias = new HashSet<Type>();
     }
 
     /// <summary>
@@ -66,7 +80,9 @@ public class FluentExportRegistration
     /// </example>
     public FluentExportRegistration As<TAlias>()
     {
-        _ = Alias.Add(typeof(TAlias));
+        var alias = Alias;
+        var t = typeof(TAlias);
+        if (!alias.Contains(t)) alias.Add(t);
         return this;
     }
 
@@ -85,7 +101,8 @@ public class FluentExportRegistration
     /// </example>
     public FluentExportRegistration As(Type t)
     {
-        _ = Alias.Add(t);
+        var alias = Alias;
+        if (!alias.Contains(t)) alias.Add(t);
         return this;
     }
 

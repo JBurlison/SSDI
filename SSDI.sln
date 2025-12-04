@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SSDI", "SSDI\SSDI.csproj", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SSDI.Tests", "SSDI.Tests\SSDI.Tests.csproj", "{2BDBE8E6-8FC9-47F3-848C-B35A06DD0EDD}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SSDI.Benchmarks", "SSDI.Benchmarks\SSDI.Benchmarks.csproj", "{E13D337D-AA53-4BDF-8ECC-BF7B34E6418E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -41,6 +43,18 @@ Global
 		{2BDBE8E6-8FC9-47F3-848C-B35A06DD0EDD}.Release|x64.Build.0 = Release|Any CPU
 		{2BDBE8E6-8FC9-47F3-848C-B35A06DD0EDD}.Release|x86.ActiveCfg = Release|Any CPU
 		{2BDBE8E6-8FC9-47F3-848C-B35A06DD0EDD}.Release|x86.Build.0 = Release|Any CPU
+		{E13D337D-AA53-4BDF-8ECC-BF7B34E6418E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E13D337D-AA53-4BDF-8ECC-BF7B34E6418E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E13D337D-AA53-4BDF-8ECC-BF7B34E6418E}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{E13D337D-AA53-4BDF-8ECC-BF7B34E6418E}.Debug|x64.Build.0 = Debug|Any CPU
+		{E13D337D-AA53-4BDF-8ECC-BF7B34E6418E}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{E13D337D-AA53-4BDF-8ECC-BF7B34E6418E}.Debug|x86.Build.0 = Debug|Any CPU
+		{E13D337D-AA53-4BDF-8ECC-BF7B34E6418E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E13D337D-AA53-4BDF-8ECC-BF7B34E6418E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E13D337D-AA53-4BDF-8ECC-BF7B34E6418E}.Release|x64.ActiveCfg = Release|Any CPU
+		{E13D337D-AA53-4BDF-8ECC-BF7B34E6418E}.Release|x64.Build.0 = Release|Any CPU
+		{E13D337D-AA53-4BDF-8ECC-BF7B34E6418E}.Release|x86.ActiveCfg = Release|Any CPU
+		{E13D337D-AA53-4BDF-8ECC-BF7B34E6418E}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
