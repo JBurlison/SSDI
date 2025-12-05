@@ -19,6 +19,7 @@ namespace SSDI.Benchmarks;
 public class ComplexBenchmark
 {
     private DependencyInjectionContainer _ssdi = null!;
+    private DependencyInjectionContainer _ssdiEager = null!;
     private IServiceProvider _msdi = null!;
     private Autofac.IContainer _autofac = null!;
     private DryIoc.Container _dryioc = null!;
@@ -28,9 +29,24 @@ public class ComplexBenchmark
     [GlobalSetup]
     public void Setup()
     {
-        // SSDI
+        // SSDI (lazy - default)
         _ssdi = new DependencyInjectionContainer();
         _ssdi.Configure(c =>
+        {
+            c.Export<FirstService>().As<IFirstService>().Lifestyle.Singleton();
+            c.Export<SecondService>().As<ISecondService>().Lifestyle.Singleton();
+            c.Export<ThirdService>().As<IThirdService>().Lifestyle.Singleton();
+            c.Export<SubObject1>().As<ISubObject1>();
+            c.Export<SubObject2>().As<ISubObject2>();
+            c.Export<SubObject3>().As<ISubObject3>();
+            c.Export<Complex>().As<IComplex>();
+        });
+        // Pre-warm the lazy container so we're measuring hot path
+        _ = _ssdi.Locate<IComplex>();
+
+        // SSDI (eager compilation)
+        _ssdiEager = new DependencyInjectionContainer { EagerCompilation = true };
+        _ssdiEager.Configure(c =>
         {
             c.Export<FirstService>().As<IFirstService>().Lifestyle.Singleton();
             c.Export<SecondService>().As<ISecondService>().Lifestyle.Singleton();
@@ -99,6 +115,9 @@ public class ComplexBenchmark
 
     [Benchmark(Description = "SSDI")]
     public IComplex SSDI_Complex() => _ssdi.Locate<IComplex>();
+
+    [Benchmark(Description = "SSDI-Eager")]
+    public IComplex SSDI_Eager_Complex() => _ssdiEager.Locate<IComplex>();
 
     [Benchmark(Description = "MS.DI")]
     public IComplex MSDI_Complex() => _msdi.GetRequiredService<IComplex>();

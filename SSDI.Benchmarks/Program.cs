@@ -35,6 +35,9 @@ class Program
                 case "prepare":
                     BenchmarkRunner.Run<PrepareBenchmark>(config);
                     break;
+                case "unregister":
+                    BenchmarkRunner.Run<UnregisterBenchmark>(config);
+                    break;
                 default:
                     RunAll(config);
                     break;
@@ -53,5 +56,6 @@ class Program
         BenchmarkRunner.Run<TransientBenchmark>(config);
         BenchmarkRunner.Run<CombinedBenchmark>(config);
         BenchmarkRunner.Run<ComplexBenchmark>(config);
+        BenchmarkRunner.Run<UnregisterBenchmark>(config);
     }
 }

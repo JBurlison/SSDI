@@ -51,6 +51,39 @@ public class PrepareBenchmark
         return container;
     }
 
+    [Benchmark(Description = "SSDI-Eager")]
+    public DependencyInjectionContainer SSDI_Eager_Prepare()
+    {
+        var container = new DependencyInjectionContainer { EagerCompilation = true };
+        container.Configure(c =>
+        {
+            // Dummies
+            c.Export<Dummy1>().As<IDummy1>();
+            c.Export<Dummy2>().As<IDummy2>();
+            c.Export<Dummy3>().As<IDummy3>();
+            c.Export<Dummy4>().As<IDummy4>();
+            c.Export<Dummy5>().As<IDummy5>();
+            c.Export<Dummy6>().As<IDummy6>();
+            c.Export<Dummy7>().As<IDummy7>();
+            c.Export<Dummy8>().As<IDummy8>();
+            c.Export<Dummy9>().As<IDummy9>();
+            c.Export<Dummy10>().As<IDummy10>();
+            // Standard
+            c.Export<Singleton>().As<ISingleton>().Lifestyle.Singleton();
+            c.Export<Transient>().As<ITransient>();
+            c.Export<Combined>().As<ICombined>();
+            // Complex
+            c.Export<FirstService>().As<IFirstService>().Lifestyle.Singleton();
+            c.Export<SecondService>().As<ISecondService>().Lifestyle.Singleton();
+            c.Export<ThirdService>().As<IThirdService>().Lifestyle.Singleton();
+            c.Export<SubObject1>().As<ISubObject1>();
+            c.Export<SubObject2>().As<ISubObject2>();
+            c.Export<SubObject3>().As<ISubObject3>();
+            c.Export<Complex>().As<IComplex>();
+        });
+        return container;
+    }
+
     [Benchmark(Description = "MS.DI")]
     public IServiceProvider MSDI_Prepare()
     {
