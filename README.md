@@ -174,61 +174,56 @@ var plugins = container.Locate<IEnumerable<IPlugin>>();
 Benchmarks comparing SSDI against popular DI containers (Windows 11):
 
 ### Singleton Resolution
-<table>
-<tr><th>Container</th><th align="right">.NET 8</th><th align="right">.NET 10</th><th align="right">Allocated</th></tr>
-<tr><td>Grace</td><td align="right">4.77 ns</td><td align="right">2.89 ns</td><td align="right">-</td></tr>
-<tr style="background-color:#c9c9c9; color:black"><td><b>SSDI</b></td><td align="right"><b>6.14 ns</b></td><td align="right"><b>3.45 ns</b></td><td align="right"><b>-</b></td></tr>
-<tr><td>SimpleInj</td><td align="right">7.96 ns</td><td align="right">4.79 ns</td><td align="right">-</td></tr>
-<tr><td>DryIoc</td><td align="right">5.56 ns</td><td align="right">4.99 ns</td><td align="right">-</td></tr>
-<tr><td>MS.DI</td><td align="right">6.10 ns</td><td align="right">5.82 ns</td><td align="right">-</td></tr>
-<tr><td>Autofac</td><td align="right">100.16 ns</td><td align="right">74.12 ns</td><td align="right">808 B</td></tr>
-</table>
+| Container | .NET 8 | .NET 10 | Allocated |
+|-----------|-------:|--------:|----------:|
+| Grace | 4.77 ns | 2.89 ns | - |
+| **SSDI** | **6.14 ns** | **3.45 ns** | **-** |
+| SimpleInj | 7.96 ns | 4.79 ns | - |
+| DryIoc | 5.56 ns | 4.99 ns | - |
+| MS.DI | 6.10 ns | 5.82 ns | - |
+| Autofac | 100.16 ns | 74.12 ns | 808 B |
 
 ### Transient Resolution
-<table>
-<tr><th>Container</th><th align="right">.NET 8</th><th align="right">.NET 10</th><th align="right">Allocated</th></tr>
-<tr><td>Grace</td><td align="right">66.75 ns</td><td align="right">48.81 ns</td><td align="right">240 B</td></tr>
-<tr style="background-color:#c9c9c9; color:black"><td><b>SSDI</b></td><td align="right"><b>65.05 ns</b></td><td align="right"><b>58.42 ns</b></td><td align="right"><b>240 B</b></td></tr>
-<tr><td>DryIoc</td><td align="right">75.99 ns</td><td align="right">67.45 ns</td><td align="right">240 B</td></tr>
-<tr><td>MS.DI</td><td align="right">81.43 ns</td><td align="right">69.00 ns</td><td align="right">240 B</td></tr>
-<tr><td>SimpleInj</td><td align="right">106.58 ns</td><td align="right">86.25 ns</td><td align="right">240 B</td></tr>
-<tr><td>Autofac</td><td align="right">1,445.70 ns</td><td align="right">1,179.15 ns</td><td align="right">8,320 B</td></tr>
-</table>
+| Container | .NET 8 | .NET 10 | Allocated |
+|-----------|-------:|--------:|----------:|
+| Grace | 66.75 ns | 48.81 ns | 240 B |
+| **SSDI** | **65.05 ns** | **58.42 ns** | **240 B** |
+| DryIoc | 75.99 ns | 67.45 ns | 240 B |
+| MS.DI | 81.43 ns | 69.00 ns | 240 B |
+| SimpleInj | 106.58 ns | 86.25 ns | 240 B |
+| Autofac | 1,445.70 ns | 1,179.15 ns | 8,320 B |
 
 ### Combined (Singleton + Transient)
-<table>
-<tr><th>Container</th><th align="right">.NET 8</th><th align="right">.NET 10</th><th align="right">Allocated</th></tr>
-<tr><td>Grace</td><td align="right">8.95 ns</td><td align="right">7.49 ns</td><td align="right">56 B</td></tr>
-<tr><td>MS.DI</td><td align="right">11.19 ns</td><td align="right">9.27 ns</td><td align="right">56 B</td></tr>
-<tr><td>DryIoc</td><td align="right">10.90 ns</td><td align="right">9.71 ns</td><td align="right">56 B</td></tr>
-<tr><td>SimpleInj</td><td align="right">13.27 ns</td><td align="right">9.85 ns</td><td align="right">56 B</td></tr>
-<tr style="background-color:#c9c9c9; color:black"><td><b>SSDI</b></td><td align="right"><b>21.58 ns</b></td><td align="right"><b>12.66 ns</b></td><td align="right"><b>56 B</b></td></tr>
-<tr><td>Autofac</td><td align="right">354.18 ns</td><td align="right">271.40 ns</td><td align="right">1,720 B</td></tr>
-</table>
+| Container | .NET 8 | .NET 10 | Allocated |
+|-----------|-------:|--------:|----------:|
+| Grace | 8.95 ns | 7.49 ns | 56 B |
+| MS.DI | 11.19 ns | 9.27 ns | 56 B |
+| DryIoc | 10.90 ns | 9.71 ns | 56 B |
+| SimpleInj | 13.27 ns | 9.85 ns | 56 B |
+| **SSDI** | **21.58 ns** | **12.66 ns** | **56 B** |
+| Autofac | 354.18 ns | 271.40 ns | 1,720 B |
 
 ### Complex Graph Resolution
-<table>
-<tr><th>Container</th><th align="right">.NET 8</th><th align="right">.NET 10</th><th align="right">Allocated</th></tr>
-<tr><td>MS.DI</td><td align="right">18.30 ns</td><td align="right">15.76 ns</td><td align="right">136 B</td></tr>
-<tr><td>Grace</td><td align="right">17.81 ns</td><td align="right">16.09 ns</td><td align="right">136 B</td></tr>
-<tr><td>DryIoc</td><td align="right">18.55 ns</td><td align="right">17.09 ns</td><td align="right">136 B</td></tr>
-<tr><td>SimpleInj</td><td align="right">23.23 ns</td><td align="right">17.42 ns</td><td align="right">136 B</td></tr>
-<tr style="background-color:#c9c9c9; color:black"><td><b>SSDI (eager)</b></td><td align="right"><b>-</b></td><td align="right"><b>19.42 ns</b></td><td align="right"><b>136 B</b></td></tr>
-<tr style="background-color:#c9c9c9; color:black"><td><b>SSDI (lazy)</b></td><td align="right"><b>70.57 ns</b></td><td align="right"><b>41.28 ns</b></td><td align="right"><b>136 B</b></td></tr>
-<tr><td>Autofac</td><td align="right">1,188.41 ns</td><td align="right">846.74 ns</td><td align="right">4,384 B</td></tr>
-</table>
+| Container | .NET 8 | .NET 10 | Allocated |
+|-----------|-------:|--------:|----------:|
+| MS.DI | 18.30 ns | 15.76 ns | 136 B |
+| Grace | 17.81 ns | 16.09 ns | 136 B |
+| DryIoc | 18.55 ns | 17.09 ns | 136 B |
+| SimpleInj | 23.23 ns | 17.42 ns | 136 B |
+| **SSDI (eager)** | **-** | **19.42 ns** | **136 B** |
+| **SSDI (lazy)** | **70.57 ns** | **41.28 ns** | **136 B** |
+| Autofac | 1,188.41 ns | 846.74 ns | 4,384 B |
 
 ### Container Setup (Registration)
-<table>
-<tr><th>Container</th><th align="right">.NET 8</th><th align="right">.NET 10</th><th align="right">Allocated</th></tr>
-<tr><td>DryIoc</td><td align="right">1.03 μs</td><td align="right">0.82 μs</td><td align="right">4.0 KB</td></tr>
-<tr><td>MS.DI</td><td align="right">1.33 μs</td><td align="right">1.42 μs</td><td align="right">12.4 KB</td></tr>
-<tr><td>Grace</td><td align="right">4.87 μs</td><td align="right">4.23 μs</td><td align="right">21.3 KB</td></tr>
-<tr><td>SimpleInj</td><td align="right">14.96 μs</td><td align="right">14.29 μs</td><td align="right">55.6 KB</td></tr>
-<tr><td>Autofac</td><td align="right">16.73 μs</td><td align="right">14.48 μs</td><td align="right">73.8 KB</td></tr>
-<tr style="background-color:#c9c9c9; color:black"><td><b>SSDI (lazy)</b></td><td align="right"><b>18.28 μs</b></td><td align="right"><b>26.91 μs</b></td><td align="right"><b>30.7 KB</b></td></tr>
-<tr style="background-color:#c9c9c9; color:black"><td><b>SSDI (eager)</b></td><td align="right"><b>-</b></td><td align="right"><b>10.40 ms</b></td><td align="right"><b>485 KB</b></td></tr>
-</table>
+| Container | .NET 8 | .NET 10 | Allocated |
+|-----------|-------:|--------:|----------:|
+| DryIoc | 1.03 μs | 0.82 μs | 4.0 KB |
+| MS.DI | 1.33 μs | 1.42 μs | 12.4 KB |
+| Grace | 4.87 μs | 4.23 μs | 21.3 KB |
+| SimpleInj | 14.96 μs | 14.29 μs | 55.6 KB |
+| Autofac | 16.73 μs | 14.48 μs | 73.8 KB |
+| **SSDI (lazy)** | **18.28 μs** | **26.91 μs** | **30.7 KB** |
+| **SSDI (eager)** | **-** | **10.40 ms** | **485 KB** |
 
 > **Note:** SSDI supports two compilation modes:
 > - **Lazy (default)** — Fast registration, compiles factories on first resolution. Best for hot-swapping.
