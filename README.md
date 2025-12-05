@@ -226,8 +226,8 @@ Benchmarks comparing SSDI against popular DI containers (Windows 11):
 | **SSDI (eager)** | **-** | **10.40 ms** | **485 KB** |
 
 > **Note:** SSDI supports two compilation modes:
-> - **Lazy (default)** — Fast registration, compiles factories on first resolution. Best for hot-swapping.
-> - **Eager** — Slow registration, but resolution speed rivals top containers. Set `EagerCompilation = true`.
+> - **Lazy (default)** — Fast registration (~27μs), compiles factories on first `Locate<T>()` call. Best for hot-swapping and plugin systems.
+> - **Eager** — Factories are pre-compiled during `Configure()` (~10ms), but resolution speed rivals top containers (~19ns). Set `EagerCompilation = true`.
 
 
 ## License
