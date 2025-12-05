@@ -2,6 +2,7 @@ using BenchmarkDotNet.Running;
 using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Jobs;
 using BenchmarkDotNet.Exporters;
+using BenchmarkDotNet.Columns;
 
 namespace SSDI.Benchmarks;
 
@@ -9,11 +10,19 @@ class Program
 {
     static void Main(string[] args)
     {
-        // Run all benchmarks
+        // Run all benchmarks with detailed statistics
         var config = DefaultConfig.Instance
             .AddExporter(MarkdownExporter.GitHub)
             .WithOptions(ConfigOptions.JoinSummary)
-            .AddJob(Job.Default.WithWarmupCount(2).WithIterationCount(10));
+            .AddJob(Job.Default.WithWarmupCount(2).WithIterationCount(10))
+            // Add Min/Max columns
+            .AddColumn(StatisticColumn.Min)
+            .AddColumn(StatisticColumn.Max)
+            // Add percentile columns
+            .AddColumn(StatisticColumn.P90)
+            .AddColumn(StatisticColumn.P95)
+            // Add Median for reference
+            .AddColumn(StatisticColumn.Median);
 
         // Run specific benchmark or all
         if (args.Length > 0)

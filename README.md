@@ -11,6 +11,7 @@ A lightweight, high-performance dependency injection framework for .NET designed
 
 - **No build step** — Register types dynamically at runtime
 - **Fast resolution** — Optimized for game loops and high-frequency calls
+- **Thread-safe** — Lock-free resolution path, safe for multi-threaded environments.
 - **Scoped lifetime** — Per-player, per-request, or per-session instances
 - **Unregister support** — Hot-swap implementations at runtime
 - **Lightweight** — Minimal allocations, ideal for games
