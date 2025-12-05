@@ -18,8 +18,25 @@ A lightweight, high-performance dependency injection framework for .NET designed
 
 ## Quick Start
 
+### Basic Registration and Resolution
+
 ```cs
 var container = new DependencyInjectionContainer();
+
+container.Configure(c =>
+{
+    c.Export<MyService>();
+    c.Export<MyRepository>().Lifestyle.Singleton();
+    c.Export<PlayerData>().As<IPlayerData>().Lifestyle.Scoped();
+});
+
+var service = container.Locate<MyService>();
+```
+
+### Eager Compilation
+Enable eager compilation for maximum resolution speed at the cost of longer registration time (The `Configure` method will take longer to complete).
+```cs
+var container = new DependencyInjectionContainer() { EagerCompilation = true};
 
 container.Configure(c =>
 {
