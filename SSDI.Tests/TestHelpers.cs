@@ -193,3 +193,48 @@ public class ServiceWithDependencyAndThreeParameters
         UseSsl = useSsl;
     }
 }
+
+// Open generic types for open-generic registration tests
+public interface ILogger<T>
+{
+    Guid Id { get; }
+}
+
+public class Logger<T> : ILogger<T>
+{
+    public Guid Id { get; } = Guid.NewGuid();
+}
+
+public class ServiceWithOwnLogger
+{
+    public ServiceWithMultipleDependencies Dependency { get; }
+    public ILogger<ServiceWithOwnLogger> Logger { get; }
+
+    public ServiceWithOwnLogger(ServiceWithMultipleDependencies dependency, ILogger<ServiceWithOwnLogger> logger)
+    {
+        Dependency = dependency;
+        Logger = logger;
+    }
+}
+
+public class ChildServiceWithOwnLogger
+{
+    public ILogger<ChildServiceWithOwnLogger> Logger { get; }
+
+    public ChildServiceWithOwnLogger(ILogger<ChildServiceWithOwnLogger> logger)
+    {
+        Logger = logger;
+    }
+}
+
+public class ParentServiceWithOwnLogger
+{
+    public ChildServiceWithOwnLogger Child { get; }
+    public ILogger<ParentServiceWithOwnLogger> Logger { get; }
+
+    public ParentServiceWithOwnLogger(ChildServiceWithOwnLogger child, ILogger<ParentServiceWithOwnLogger> logger)
+    {
+        Child = child;
+        Logger = logger;
+    }
+}

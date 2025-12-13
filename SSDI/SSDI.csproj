@@ -7,7 +7,7 @@
     
     <!-- NuGet Package Metadata -->
     <PackageId>SSDI</PackageId>
-    <Version>1.4.2</Version>
+    <Version>1.4.3</Version>
     <Authors>JBurlison</Authors>
     <Company>JBurlison</Company>
     <Description>Super Simple Dependency Injection - A lightweight DI framework for Console apps and games. No container build step required, allowing runtime extensibility with dynamically loaded DLLs.</Description>

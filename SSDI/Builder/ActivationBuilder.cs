@@ -40,7 +40,7 @@ public class ActivationBuilder
 
     // Instance fields - private (registration & caching)
     private readonly ConcurrentDictionary<Type, TypeRegistration> _registrations = new();
-    private readonly ConcurrentDictionary<Type, List<Type>> _aliases = new();
+    private readonly ConcurrentDictionary<Type, Type[]> _aliases = new();
     private readonly ConcurrentDictionary<Type, Func<Scope?, object>> _factoryCache = new();
     private readonly ConcurrentDictionary<Type, Delegate> _genericFactoryCache = new();
     private readonly ConcurrentDictionary<Type, object> _singletonInstances = new();
@@ -53,6 +53,142 @@ public class ActivationBuilder
     // Forward dependency map for cleanup
     // Key = type, Value = set of types it depends on
     private readonly ConcurrentDictionary<Type, HashSet<Type>> _dependencies = new();
+
+    #endregion
+
+    #region Private Methods - Open Generic Support
+
+    private static bool TryRemoveImplementation(Type[] implementations, Type typeToRemove, out Type[] updated)
+    {
+        updated = implementations;
+        if (implementations.Length == 0) return false;
+
+        var idx = Array.IndexOf(implementations, typeToRemove);
+        if (idx < 0) return false;
+
+        if (implementations.Length == 1)
+        {
+            updated = Array.Empty<Type>();
+            return true;
+        }
+
+        var result = new Type[implementations.Length - 1];
+        if (idx > 0)
+            Array.Copy(implementations, 0, result, 0, idx);
+        if (idx < implementations.Length - 1)
+            Array.Copy(implementations, idx + 1, result, idx, implementations.Length - idx - 1);
+        updated = result;
+        return true;
+    }
+
+    private bool IsResolvableType(Type type)
+    {
+        if (_registrations.ContainsKey(type) || _aliases.ContainsKey(type) || _singletonInstances.ContainsKey(type))
+            return true;
+
+        if (type.IsGenericType)
+        {
+            var def = type.GetGenericTypeDefinition();
+            return _registrations.ContainsKey(def) || _aliases.ContainsKey(def);
+        }
+
+        return false;
+    }
+
+    private static bool TryCloseGenericType(Type openGenericType, Type[] genericArguments, out Type closedType)
+    {
+        closedType = null!;
+
+        if (!openGenericType.IsGenericTypeDefinition) return false;
+
+        var openArgs = openGenericType.GetGenericArguments();
+        if (openArgs.Length != genericArguments.Length) return false;
+
+        closedType = openGenericType.MakeGenericType(genericArguments);
+        return true;
+    }
+
+    private Type EnsureClosedGenericRegistrationIfNeeded(Type concreteType)
+    {
+        if (_registrations.ContainsKey(concreteType)) return concreteType;
+
+        if (!concreteType.IsGenericType) return concreteType;
+
+        var genericDef = concreteType.GetGenericTypeDefinition();
+        if (!_registrations.TryGetValue(genericDef, out var template)) return concreteType;
+
+        var parameters = template.Parameters.Count == 0
+            ? EmptyParameters
+            : new List<DIParameter>(template.Parameters);
+
+        _registrations.TryAdd(concreteType, new TypeRegistration(concreteType, template.Lifestyle, parameters, null));
+        return concreteType;
+    }
+
+    private bool TryGetConcreteTypeForRequested(Type requestedType, out Type concreteType)
+    {
+        concreteType = requestedType;
+
+        if (_aliases.TryGetValue(requestedType, out var implementations) && implementations.Length > 0)
+        {
+            concreteType = implementations[0];
+            return true;
+        }
+
+        if (!requestedType.IsGenericType) return false;
+
+        var requestedDef = requestedType.GetGenericTypeDefinition();
+        if (!_aliases.TryGetValue(requestedDef, out var openImplementations) || openImplementations.Length == 0)
+            return false;
+
+        var openImpl = openImplementations[0];
+        if (openImpl.IsGenericTypeDefinition && TryCloseGenericType(openImpl, requestedType.GetGenericArguments(), out var closedImpl))
+        {
+            concreteType = closedImpl;
+            return true;
+        }
+
+        concreteType = openImpl;
+        return true;
+    }
+
+    private void InvalidateClosedGenericCaches(Type genericDefinition)
+    {
+        foreach (var key in _registrations.Keys)
+        {
+            if (key == genericDefinition) continue;
+            if (key.IsGenericType && key.GetGenericTypeDefinition() == genericDefinition)
+                _registrations.TryRemove(key, out _);
+        }
+
+        foreach (var key in _factoryCache.Keys)
+        {
+            if (key.IsGenericType && key.GetGenericTypeDefinition() == genericDefinition)
+                _factoryCache.TryRemove(key, out _);
+        }
+
+        foreach (var key in _genericFactoryCache.Keys)
+        {
+            if (key.IsGenericType && key.GetGenericTypeDefinition() == genericDefinition)
+                _genericFactoryCache.TryRemove(key, out _);
+        }
+
+        foreach (var key in _singletonInstances.Keys)
+        {
+            if (key.IsGenericType && key.GetGenericTypeDefinition() == genericDefinition)
+                _singletonInstances.TryRemove(key, out _);
+        }
+
+        foreach (var key in _enumerableFactoryCache.Keys)
+        {
+            if (!key.IsGenericType) continue;
+            if (key.GetGenericTypeDefinition() != typeof(IEnumerable<>)) continue;
+
+            var element = key.GetGenericArguments()[0];
+            if (element.IsGenericType && element.GetGenericTypeDefinition() == genericDefinition)
+                _enumerableFactoryCache.TryRemove(key, out _);
+        }
+    }
 
     #endregion
 
@@ -115,6 +251,11 @@ public class ActivationBuilder
         _lock.EnterWriteLock();
         try
         {
+            if (type.IsGenericTypeDefinition)
+            {
+                InvalidateClosedGenericCaches(type);
+            }
+
             var removed = false;
             object? removedInstance = null;
             var wasDisposed = false;
@@ -152,11 +293,21 @@ public class ActivationBuilder
             {
                 foreach (var kvp in _aliases)
                 {
-                    if (kvp.Value.Remove(type))
+                    if (TryRemoveImplementation(kvp.Value, type, out var updated))
                     {
+                        if (updated.Length == 0)
+                            _aliases.TryRemove(kvp.Key, out _);
+                        else
+                            _aliases[kvp.Key] = updated;
+
                         _factoryCache.TryRemove(kvp.Key, out _);
                         _genericFactoryCache.TryRemove(kvp.Key, out _);
                         _enumerableFactoryCache.TryRemove(typeof(IEnumerable<>).MakeGenericType(kvp.Key), out _);
+
+                        if (kvp.Key.IsGenericTypeDefinition)
+                        {
+                            InvalidateClosedGenericCaches(kvp.Key);
+                        }
 
                         // Also invalidate dependents of the alias
                         InvalidateDependentsRecursive(kvp.Key);
@@ -198,6 +349,11 @@ public class ActivationBuilder
         _lock.EnterWriteLock();
         try
         {
+            if (type.IsGenericTypeDefinition)
+            {
+                InvalidateClosedGenericCaches(type);
+            }
+
             var removed = false;
             object? removedInstance = null;
             var wasDisposed = false;
@@ -236,11 +392,21 @@ public class ActivationBuilder
             {
                 foreach (var kvp in _aliases)
                 {
-                    if (kvp.Value.Remove(type))
+                    if (TryRemoveImplementation(kvp.Value, type, out var updated))
                     {
+                        if (updated.Length == 0)
+                            _aliases.TryRemove(kvp.Key, out _);
+                        else
+                            _aliases[kvp.Key] = updated;
+
                         _factoryCache.TryRemove(kvp.Key, out _);
                         _genericFactoryCache.TryRemove(kvp.Key, out _);
                         _enumerableFactoryCache.TryRemove(typeof(IEnumerable<>).MakeGenericType(kvp.Key), out _);
+
+                        if (kvp.Key.IsGenericTypeDefinition)
+                        {
+                            InvalidateClosedGenericCaches(kvp.Key);
+                        }
 
                         // Also invalidate dependents of the alias
                         InvalidateDependentsRecursive(kvp.Key);
@@ -281,6 +447,11 @@ public class ActivationBuilder
         try
         {
             if (!_aliases.TryRemove(aliasType, out var implementations)) return 0;
+
+            if (aliasType.IsGenericTypeDefinition)
+            {
+                InvalidateClosedGenericCaches(aliasType);
+            }
 
             var count = 0;
             var implCopy = new List<Type>(implementations);
@@ -334,6 +505,11 @@ public class ActivationBuilder
         {
             if (!_aliases.TryRemove(aliasType, out var implementations)) return 0;
 
+            if (aliasType.IsGenericTypeDefinition)
+            {
+                InvalidateClosedGenericCaches(aliasType);
+            }
+
             var count = 0;
             var implCopy = new List<Type>(implementations);
 
@@ -382,9 +558,7 @@ public class ActivationBuilder
     /// <returns>True if the type is registered; otherwise, false.</returns>
     public bool IsRegistered(Type type)
     {
-        return _registrations.ContainsKey(type) ||
-            _aliases.ContainsKey(type) ||
-            _singletonInstances.ContainsKey(type);
+        return IsResolvableType(type);
     }
 
     #endregion
@@ -586,6 +760,11 @@ public class ActivationBuilder
 
             var parameters = fluentReg.HasParameters ? fluentReg.ParametersInternal : EmptyParameters;
 
+            if (exportedType.IsGenericTypeDefinition)
+            {
+                InvalidateClosedGenericCaches(exportedType);
+            }
+
             if (lifestyle == LifestyleType.Singleton && exportRegistration.Instance is not null)
             {
                 var instance = exportRegistration.Instance;
@@ -607,13 +786,22 @@ public class ActivationBuilder
             }
 
             _registrations[exportedType] = new TypeRegistration(exportedType, lifestyle, parameters, null);
-            typesToCompile.Add(exportedType);
+
+            if (!exportedType.IsGenericTypeDefinition)
+            {
+                typesToCompile.Add(exportedType);
+            }
             registeredTypes.Add((exportedType, aliases, lifestyle, false));
 
             if (fluentReg.HasAlias)
             {
                 foreach (var aliasType in fluentReg.Alias)
                 {
+                    if (aliasType.IsGenericTypeDefinition)
+                    {
+                        InvalidateClosedGenericCaches(aliasType);
+                    }
+
                     AddAliasFast(aliasType, exportedType);
                     // Invalidate any existing cache for this alias
                     _factoryCache.TryRemove(aliasType, out _);
@@ -951,14 +1139,13 @@ public class ActivationBuilder
             return BuildEnumerableFactory<T>(type);
         }
 
-        Type? concreteType = null;
-        if (_aliases.TryGetValue(type, out var implementations))
+        var resolveType = type;
+        if (TryGetConcreteTypeForRequested(type, out var concreteType))
         {
-            if (implementations.Count > 0)
-                concreteType = implementations[0];
+            resolveType = concreteType;
         }
 
-        var resolveType = concreteType ?? type;
+        resolveType = EnsureClosedGenericRegistrationIfNeeded(resolveType);
 
         if (_singletonInstances.TryGetValue(resolveType, out var singleton))
         {
@@ -1050,7 +1237,7 @@ public class ActivationBuilder
 
         if (_aliases.TryGetValue(elementType, out var implementations))
         {
-            if (implementations.Count == 0)
+            if (implementations.Length == 0)
             {
                 return () => (T)Activator.CreateInstance(listType)!;
             }
@@ -1067,8 +1254,33 @@ public class ActivationBuilder
             };
         }
 
-        if (_registrations.ContainsKey(elementType))
+        if (elementType.IsGenericType && _aliases.TryGetValue(elementType.GetGenericTypeDefinition(), out var openImplementations))
         {
+            if (openImplementations.Length == 0)
+            {
+                return () => (T)Activator.CreateInstance(listType)!;
+            }
+
+            var args = elementType.GetGenericArguments();
+            var closedImpls = openImplementations
+                .Select(t => t.IsGenericTypeDefinition && TryCloseGenericType(t, args, out var closed) ? closed : t)
+                .ToList();
+
+            var factories = closedImpls.Select(t => GetOrCreateFactory(t)).ToList();
+            return () =>
+            {
+                var list = (IList)Activator.CreateInstance(listType)!;
+                foreach (var factory in factories)
+                {
+                    list.Add(factory(null));
+                }
+                return (T)list;
+            };
+        }
+
+        if (_registrations.ContainsKey(elementType) || (elementType.IsGenericType && _registrations.ContainsKey(elementType.GetGenericTypeDefinition())))
+        {
+            _ = EnsureClosedGenericRegistrationIfNeeded(elementType);
             var factory = GetOrCreateFactory(elementType);
             return () =>
             {
@@ -1087,27 +1299,23 @@ public class ActivationBuilder
 
     private object LocateInternalByType(Type type, Scope? scope)
     {
-        if (_aliases.TryGetValue(type, out var implementations))
+        if (TryGetConcreteTypeForRequested(type, out var concreteType))
         {
-            Type? concreteType = null;
-            if (implementations.Count > 0)
-                concreteType = implementations[0];
-
-            if (concreteType != null)
-            {
-                var factory = GetOrCreateFactory(concreteType);
-                _factoryCache.TryAdd(type, factory);
-                return factory(scope);
-            }
+            concreteType = EnsureClosedGenericRegistrationIfNeeded(concreteType);
+            var factory = GetOrCreateFactory(concreteType);
+            _factoryCache.TryAdd(type, factory);
+            return factory(scope);
         }
 
+        _ = EnsureClosedGenericRegistrationIfNeeded(type);
         var directFactory = GetOrCreateFactory(type);
         return directFactory(scope);
     }
 
     private Func<Scope?, object> GetOrCreateFactory(Type type)
     {
-        return _factoryCache.GetOrAdd(type, t => CompileFactoryWithTracking(t, t));
+        var resolvedType = EnsureClosedGenericRegistrationIfNeeded(type);
+        return _factoryCache.GetOrAdd(type, _ => CompileFactoryWithTracking(resolvedType, type));
     }
 
     private Func<Scope?, object> CreateSingletonFactoryNonGeneric(Type type, Func<Scope?, object> innerFactory)
@@ -1163,11 +1371,12 @@ public class ActivationBuilder
     {
         Type resolveType = type;
 
-        if (_aliases.TryGetValue(type, out var implementations))
+        if (TryGetConcreteTypeForRequested(type, out var concreteType))
         {
-            if (implementations.Count > 0)
-                resolveType = implementations[0];
+            resolveType = concreteType;
         }
+
+        resolveType = EnsureClosedGenericRegistrationIfNeeded(resolveType);
 
         if (!_registrations.TryGetValue(resolveType, out var registration))
         {
@@ -1252,6 +1461,34 @@ public class ActivationBuilder
                 }
             }
         }
+        else if (elementType.IsGenericType && _aliases.TryGetValue(elementType.GetGenericTypeDefinition(), out var openImplementations))
+        {
+            var args = elementType.GetGenericArguments();
+            foreach (var openImpl in openImplementations)
+            {
+                var implType = openImpl;
+                if (openImpl.IsGenericTypeDefinition && TryCloseGenericType(openImpl, args, out var closedImpl))
+                {
+                    implType = closedImpl;
+                }
+
+                if (parameters.Length > 0)
+                {
+                    list.Add(LocateWithRuntimeParams(implType, scope, parameters));
+                }
+                else
+                {
+                    if (_factoryCache.TryGetValue(implType, out var factory))
+                    {
+                        list.Add(factory(scope));
+                    }
+                    else
+                    {
+                        list.Add(LocateInternalByType(implType, scope));
+                    }
+                }
+            }
+        }
         else if (_registrations.ContainsKey(elementType))
         {
             if (parameters.Length > 0)
@@ -1261,6 +1498,18 @@ public class ActivationBuilder
             else
             {
                 list.Add(LocateInternalByType(elementType, scope));
+            }
+        }
+        else if (elementType.IsGenericType && _registrations.ContainsKey(elementType.GetGenericTypeDefinition()))
+        {
+            var resolvedElementType = EnsureClosedGenericRegistrationIfNeeded(elementType);
+            if (parameters.Length > 0)
+            {
+                list.Add(LocateWithRuntimeParams(resolvedElementType, scope, parameters));
+            }
+            else
+            {
+                list.Add(LocateInternalByType(resolvedElementType, scope));
             }
         }
 
@@ -1291,8 +1540,28 @@ public class ActivationBuilder
             };
         }
 
-        if (_registrations.ContainsKey(elementType))
+        if (elementType.IsGenericType && _aliases.TryGetValue(elementType.GetGenericTypeDefinition(), out var openImplementations))
         {
+            var args = elementType.GetGenericArguments();
+            var closedImpls = openImplementations
+                .Select(t => t.IsGenericTypeDefinition && TryCloseGenericType(t, args, out var closed) ? closed : t)
+                .ToList();
+
+            var factories = closedImpls.Select(t => GetOrCreateFactory(t)).ToList();
+            return scope =>
+            {
+                var list = (IList)Activator.CreateInstance(listType)!;
+                foreach (var factory in factories)
+                {
+                    list.Add(factory(scope));
+                }
+                return list;
+            };
+        }
+
+        if (_registrations.ContainsKey(elementType) || (elementType.IsGenericType && _registrations.ContainsKey(elementType.GetGenericTypeDefinition())))
+        {
+            _ = EnsureClosedGenericRegistrationIfNeeded(elementType);
             var factory = GetOrCreateFactory(elementType);
             return scope =>
             {
@@ -1358,7 +1627,7 @@ public class ActivationBuilder
             }
         }
 
-        if (_registrations.ContainsKey(param.ParameterType) || _aliases.ContainsKey(param.ParameterType))
+        if (IsResolvableType(param.ParameterType))
         {
             dependencies.Add(param.ParameterType);
             return BuildInlineResolutionTypedWithTracking(param.ParameterType, dependencies, resolutionStack);
@@ -1384,13 +1653,14 @@ public class ActivationBuilder
         try
         {
             Type resolveType = type;
-            if (_aliases.TryGetValue(type, out var implementations))
+            if (TryGetConcreteTypeForRequested(type, out var concreteType))
             {
-                if (implementations.Count > 0)
-                    resolveType = implementations[0];
+                resolveType = concreteType;
                 // Track the alias as a dependency too
                 dependencies.Add(type);
             }
+
+            resolveType = EnsureClosedGenericRegistrationIfNeeded(resolveType);
 
             if (_singletonInstances.TryGetValue(resolveType, out var singleton))
             {
@@ -1523,7 +1793,7 @@ public class ActivationBuilder
             }
         }
 
-        if (_registrations.ContainsKey(param.ParameterType) || _aliases.ContainsKey(param.ParameterType))
+        if (IsResolvableType(param.ParameterType))
         {
             dependencies.Add(param.ParameterType);
             return BuildInlineResolutionTypedWithTracking(param.ParameterType, dependencies, resolutionStack);
@@ -1626,7 +1896,7 @@ public class ActivationBuilder
             }
         }
 
-        if (_registrations.ContainsKey(param.ParameterType) || _aliases.ContainsKey(param.ParameterType))
+        if (IsResolvableType(param.ParameterType))
         {
             dependencies.Add(param.ParameterType);
             return BuildInlineResolutionExpressionWithTracking(param.ParameterType, scopeParam, dependencies, resolutionStack);
@@ -1652,12 +1922,13 @@ public class ActivationBuilder
         try
         {
             Type resolveType = type;
-            if (_aliases.TryGetValue(type, out var implementations))
+            if (TryGetConcreteTypeForRequested(type, out var concreteType))
             {
-                if (implementations.Count > 0)
-                    resolveType = implementations[0];
+                resolveType = concreteType;
                 dependencies.Add(type);
             }
+
+            resolveType = EnsureClosedGenericRegistrationIfNeeded(resolveType);
 
             if (_singletonInstances.TryGetValue(resolveType, out var singleton))
             {
@@ -1819,7 +2090,7 @@ public class ActivationBuilder
             }
         }
 
-        if (_registrations.ContainsKey(param.ParameterType) || _aliases.ContainsKey(param.ParameterType))
+        if (IsResolvableType(param.ParameterType))
         {
             dependencies.Add(param.ParameterType);
             return BuildInlineResolutionExpressionWithTracking(param.ParameterType, scopeParam, dependencies, resolutionStack);
@@ -1889,7 +2160,7 @@ public class ActivationBuilder
 
             if (!canSatisfy)
             {
-                if (_registrations.ContainsKey(param.ParameterType) || _aliases.ContainsKey(param.ParameterType))
+                if (IsResolvableType(param.ParameterType))
                 {
                     canSatisfy = true;
                     score += 5;
@@ -1952,7 +2223,7 @@ public class ActivationBuilder
 
             if (!found)
             {
-                if (_registrations.ContainsKey(param.ParameterType) || _aliases.ContainsKey(param.ParameterType))
+                if (IsResolvableType(param.ParameterType))
                 {
                     args[i] = LocateWithScope(param.ParameterType, scope, Array.Empty<DIParameter>());
                     found = true;
@@ -1984,22 +2255,39 @@ public class ActivationBuilder
     {
         _aliases.AddOrUpdate(
             aliasType,
-            _ => new List<Type>(2) { concreteType },
-            (_, list) => { if (!list.Contains(concreteType)) list.Add(concreteType); return list; });
+            _ => new[] { concreteType },
+            (_, existing) =>
+            {
+                for (var i = 0; i < existing.Length; i++)
+                {
+                    if (existing[i] == concreteType) return existing;
+                }
+
+                var updated = new Type[existing.Length + 1];
+                Array.Copy(existing, updated, existing.Length);
+                updated[existing.Length] = concreteType;
+                return updated;
+            });
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void AddAliasFast(Type aliasType, Type concreteType)
     {
-        if (_aliases.TryGetValue(aliasType, out var list))
+        if (_aliases.TryGetValue(aliasType, out var existing))
         {
-            if (!list.Contains(concreteType))
-                list.Add(concreteType);
+            for (var i = 0; i < existing.Length; i++)
+            {
+                if (existing[i] == concreteType) return;
+            }
+
+            var updated = new Type[existing.Length + 1];
+            Array.Copy(existing, updated, existing.Length);
+            updated[existing.Length] = concreteType;
+            _aliases.TryUpdate(aliasType, updated, existing);
+            return;
         }
-        else
-        {
-            _aliases[aliasType] = new List<Type>(2) { concreteType };
-        }
+
+        _aliases.TryAdd(aliasType, new[] { concreteType });
     }
 
     #endregion

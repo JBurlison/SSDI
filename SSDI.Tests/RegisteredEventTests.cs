@@ -42,7 +42,7 @@ public class RegisteredEventTests
         // Assert
         Assert.IsNotNull(eventArgs);
         Assert.AreEqual(typeof(ServiceImplementation), eventArgs.RegisteredType);
-        Assert.AreEqual(1, eventArgs.Aliases.Count);
+        Assert.HasCount(1, eventArgs.Aliases);
         Assert.AreEqual(typeof(IService), eventArgs.Aliases[0]);
     }
 
@@ -112,7 +112,7 @@ public class RegisteredEventTests
         });
 
         // Assert
-        Assert.AreEqual(3, registeredTypes.Count);
+        Assert.HasCount(3, registeredTypes);
         CollectionAssert.Contains(registeredTypes, typeof(SimpleService));
         CollectionAssert.Contains(registeredTypes, typeof(AnotherService));
         CollectionAssert.Contains(registeredTypes, typeof(DisposableService));
@@ -336,7 +336,7 @@ public class RegisteredEventTests
         Assert.AreEqual(3, count);
         await Task.WhenAny(tcs.Task, Task.Delay(1000));
         Assert.IsTrue(tcs.Task.IsCompleted);
-        Assert.AreEqual(3, unregisteredTypes.Count);
+        Assert.HasCount(3, unregisteredTypes);
         CollectionAssert.Contains(unregisteredTypes, typeof(AuthPacketHandler));
         CollectionAssert.Contains(unregisteredTypes, typeof(GamePacketHandler));
         CollectionAssert.Contains(unregisteredTypes, typeof(ChatPacketHandler));

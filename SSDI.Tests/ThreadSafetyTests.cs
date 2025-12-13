@@ -39,8 +39,8 @@ public class ThreadSafetyTests
         });
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
-        Assert.AreEqual(ThreadCount * IterationsPerThread, results.Count);
+        Assert.IsTrue(exceptions.IsEmpty, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.HasCount(ThreadCount * IterationsPerThread, results);
 
         // Transient should create unique instances
         var uniqueInstances = results.Distinct().Count();
@@ -75,8 +75,8 @@ public class ThreadSafetyTests
         });
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
-        Assert.AreEqual(ThreadCount * IterationsPerThread, results.Count);
+        Assert.IsTrue(exceptions.IsEmpty, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.HasCount(ThreadCount * IterationsPerThread, results);
 
         // Singleton should return the same instance
         var uniqueInstances = results.Distinct().Count();
@@ -115,8 +115,8 @@ public class ThreadSafetyTests
         });
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
-        Assert.AreEqual(ThreadCount * IterationsPerThread, results.Count);
+        Assert.IsTrue(exceptions.IsEmpty, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.HasCount(ThreadCount * IterationsPerThread, results);
 
         // All should have the same singleton dependency
         var singletonDependency = results.First().Dependency;
@@ -151,8 +151,8 @@ public class ThreadSafetyTests
         });
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
-        Assert.AreEqual(ThreadCount * IterationsPerThread, results.Count);
+        Assert.IsTrue(exceptions.IsEmpty, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.HasCount(ThreadCount * IterationsPerThread, results);
 
         // Singleton via interface
         var uniqueInstances = results.Distinct().Count();
@@ -192,8 +192,8 @@ public class ThreadSafetyTests
         });
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
-        Assert.AreEqual(ThreadCount * IterationsPerThread, results.Count);
+        Assert.IsTrue(exceptions.IsEmpty, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.HasCount(ThreadCount * IterationsPerThread, results);
 
         // Each resolution should have 3 handlers
         Assert.IsTrue(results.All(r => r.Count() == 3));
@@ -234,7 +234,7 @@ public class ThreadSafetyTests
         });
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.IsEmpty(exceptions, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
 
         // All types should be registered
         Assert.IsTrue(container.IsRegistered<SimpleService>());
@@ -300,7 +300,7 @@ public class ThreadSafetyTests
         Task.WaitAll(tasks.ToArray());
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.IsEmpty(exceptions, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
     }
 
     #endregion
@@ -343,7 +343,7 @@ public class ThreadSafetyTests
         });
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.IsEmpty(exceptions, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
     }
 
     [TestMethod]
@@ -414,7 +414,7 @@ public class ThreadSafetyTests
         Task.WaitAll(tasks.ToArray());
 
         // Assert - no unexpected exceptions
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.IsEmpty(exceptions, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
     }
 
     [TestMethod]
@@ -448,7 +448,7 @@ public class ThreadSafetyTests
         await Task.WhenAll(tasks);
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.IsEmpty(exceptions, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
     }
 
     [TestMethod]
@@ -514,9 +514,9 @@ public class ThreadSafetyTests
         Task.WaitAll(tasks.ToArray());
 
         // Assert
-        Assert.AreEqual(0, unexpectedExceptions.Count,
+        Assert.IsTrue(unexpectedExceptions.IsEmpty,
             $"Unexpected exceptions: {string.Join(", ", unexpectedExceptions.Select(e => e.Message))}");
-        Assert.IsTrue(successfulResolutions > 0, "Should have some successful resolutions");
+        Assert.AreNotEqual(0, successfulResolutions, "Should have some successful resolutions");
         // Failed resolutions are expected and acceptable
     }
 
@@ -580,9 +580,9 @@ public class ThreadSafetyTests
         Task.WaitAll(tasks.ToArray());
 
         // Assert
-        Assert.AreEqual(0, unexpectedExceptions.Count,
+        Assert.IsTrue(unexpectedExceptions.IsEmpty,
             $"Unexpected exceptions: {string.Join(", ", unexpectedExceptions.Select(e => e.Message))}");
-        Assert.IsTrue(resolvedInstances.Count > 0, "Should have resolved some instances");
+        Assert.IsFalse(resolvedInstances.IsEmpty, "Should have resolved some instances");
         // Multiple unique instances are expected since singleton gets recreated after unregister
     }
 
@@ -646,7 +646,7 @@ public class ThreadSafetyTests
         Task.WaitAll(tasks.ToArray());
 
         // Assert
-        Assert.AreEqual(0, unexpectedExceptions.Count,
+        Assert.IsTrue(unexpectedExceptions.IsEmpty,
             $"Unexpected exceptions: {string.Join(", ", unexpectedExceptions.Select(e => e.Message))}");
     }
 
@@ -736,9 +736,9 @@ public class ThreadSafetyTests
         Task.WaitAll(tasks.ToArray());
 
         // Assert
-        Assert.AreEqual(0, unexpectedExceptions.Count,
+        Assert.IsTrue(unexpectedExceptions.IsEmpty,
             $"Unexpected exceptions: {string.Join(", ", unexpectedExceptions.Select(e => e.Message))}");
-        Assert.IsTrue(resolvedCounts.Count > 0, "Should have resolved some enumerables");
+        Assert.IsFalse(resolvedCounts.IsEmpty, "Should have resolved some enumerables");
         // Count can vary (0-3) depending on timing, all are valid
     }
 
@@ -807,7 +807,7 @@ public class ThreadSafetyTests
         Task.WaitAll(tasks.ToArray());
 
         // Assert
-        Assert.AreEqual(0, unexpectedExceptions.Count,
+        Assert.IsEmpty(unexpectedExceptions,
             $"Unexpected exceptions: {string.Join(", ", unexpectedExceptions.Select(e => e.Message))}");
     }
 
@@ -891,7 +891,7 @@ public class ThreadSafetyTests
         Task.WaitAll(tasks.ToArray());
 
         // Assert - no unexpected exceptions during concurrent operations
-        Assert.AreEqual(0, unexpectedExceptions.Count,
+        Assert.IsEmpty(unexpectedExceptions,
             $"Unexpected exceptions: {string.Join(", ", unexpectedExceptions.Select(e => e.Message))}");
         // Dispose count can vary in concurrent scenario, just verify no crashes
     }
@@ -929,8 +929,8 @@ public class ThreadSafetyTests
         });
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
-        Assert.AreEqual(ThreadCount * 10, scopes.Count);
+        Assert.IsEmpty(exceptions, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.HasCount(ThreadCount * 10, scopes);
 
         // Cleanup
         foreach (var scope in scopes)
@@ -969,8 +969,8 @@ public class ThreadSafetyTests
         });
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
-        Assert.AreEqual(ThreadCount * IterationsPerThread, results.Count);
+        Assert.IsEmpty(exceptions, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.HasCount(ThreadCount * IterationsPerThread, results);
 
         // All should be the same scoped instance
         var uniqueInstances = results.Distinct().Count();
@@ -1003,8 +1003,8 @@ public class ThreadSafetyTests
         });
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
-        Assert.AreEqual(ThreadCount, instances.Count);
+        Assert.IsEmpty(exceptions, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.HasCount(ThreadCount, instances);
 
         // Each scope should have a different instance
         var uniqueInstances = instances.Distinct().Count();
@@ -1051,7 +1051,7 @@ public class ThreadSafetyTests
         });
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.IsEmpty(exceptions, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
     }
 
     [TestMethod]
@@ -1110,7 +1110,7 @@ public class ThreadSafetyTests
         Task.WaitAll(tasks.ToArray());
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.IsEmpty(exceptions, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
     }
 
     #endregion
@@ -1222,7 +1222,7 @@ public class ThreadSafetyTests
         Task.WaitAll(tasks.ToArray());
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.IsEmpty(exceptions, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
     }
 
     [TestMethod]
@@ -1251,8 +1251,8 @@ public class ThreadSafetyTests
         });
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
-        Assert.AreEqual(100, results.Count);
+        Assert.IsEmpty(exceptions, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.HasCount(100, results);
 
         // Only one instance should have been created
         Assert.AreEqual(1, CountingService.InstanceCount);
@@ -1293,7 +1293,7 @@ public class ThreadSafetyTests
         });
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.IsEmpty(exceptions, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
         Assert.AreEqual(100, eventCount);
     }
 
@@ -1330,9 +1330,9 @@ public class ThreadSafetyTests
         });
 
         // Assert
-        Assert.AreEqual(0, exceptions.Count, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
+        Assert.IsEmpty(exceptions, $"Exceptions occurred: {string.Join(", ", exceptions.Select(e => e.Message))}");
         // At least some unregistrations should have fired events (exact count depends on race conditions)
-        Assert.IsTrue(eventCount >= 1);
+        Assert.IsGreaterThanOrEqualTo(1, eventCount);
     }
 
     #endregion
